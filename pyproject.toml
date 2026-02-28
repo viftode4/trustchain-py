@@ -48,6 +48,7 @@ dev = [
     "protobuf>=5.29",
     "hypercorn>=0.17",
 ]
+bench = ["pytest-benchmark>=4.0", "pytest>=8.0"]
 
 [project.urls]
 Homepage = "https://github.com/viftode4/trustchain-sdk"

@@ -49,6 +49,8 @@ class TrustEngine:
         seed_nodes: Optional[List[str]] = None,
         weights: Optional[Dict[str, float]] = None,
         delegation_store: Optional[DelegationStore] = None,
+        decay_half_life_ms: Optional[int] = None,
+        checkpoint=None,
     ) -> None:
         self.store = store
         self.weights = weights or self.DEFAULT_WEIGHTS.copy()
@@ -58,6 +60,8 @@ class TrustEngine:
             store=store,
         )
         self.delegation_store = delegation_store
+        self.decay_half_life_ms = decay_half_life_ms
+        self.checkpoint = checkpoint
         self.netflow: Optional[NetFlowTrust] = None
         if seed_nodes:
             self.netflow = NetFlowTrust(
@@ -201,12 +205,21 @@ class TrustEngine:
         return False
 
     def compute_chain_integrity(self, pubkey: str) -> float:
-        """Chain integrity score alone [0.0, 1.0]."""
+        """Chain integrity score alone [0.0, 1.0].
+
+        When a finalized checkpoint is attached, blocks with sequence ≤ the
+        checkpoint head are trusted (structural checks only, no Ed25519 verify).
+        """
         chain = self.store.get_chain(pubkey)
         if not chain:
             return 1.0
 
         from trustchain.halfblock import GENESIS_HASH, verify_block
+
+        # Determine checkpoint-covered sequence for this pubkey.
+        checkpoint_seq = 0
+        if self.checkpoint is not None and getattr(self.checkpoint, "finalized", False):
+            checkpoint_seq = getattr(self.checkpoint, "chain_heads", {}).get(pubkey, 0)
 
         valid_count = 0
         for i, block in enumerate(chain):
@@ -218,8 +231,10 @@ class TrustEngine:
             if block.previous_hash != expected_prev:
                 break
 
-            if not verify_block(block):
-                break
+            # Skip Ed25519 verification for blocks covered by checkpoint.
+            if block.sequence_number > checkpoint_seq:
+                if not verify_block(block):
+                    break
 
             valid_count += 1
 
@@ -236,44 +251,77 @@ class TrustEngine:
 
         Features:
         - interaction_count: total half-blocks (saturates at 20)
-        - unique_counterparties: diversity (saturates at 5)
+        - unique_counterparties: diversity (saturates at 5) — structural, no decay
         - completion_rate: completed/total transactions
-        - account_age: time span (saturates at 60s for demo timescale)
+        - account_age: time span (saturates at 60s for demo timescale) — structural, no decay
         - entropy: Shannon entropy of counterparty distribution
+
+        When ``decay_half_life_ms`` is set, applies ``2^(-age_ms / half_life_ms)``
+        per block to interaction_count, completion_rate, and entropy.
         """
         chain = self.store.get_chain(pubkey)
         if not chain:
             return 0.0
 
+        # Reference time for decay: latest block timestamp.
+        now_ms = max(b.timestamp for b in chain)
+
+        def decay_weight(block_ts: int) -> float:
+            if self.decay_half_life_ms is not None and self.decay_half_life_ms > 0:
+                age_ms = max(0, now_ms - block_ts)
+                return 2.0 ** (-(age_ms / self.decay_half_life_ms))
+            return 1.0
+
         counterparties: List[str] = []
-        completed = 0
+        counterparties_weighted: Dict[str, float] = {}
+        weighted_completed = 0.0
+        weighted_total = 0.0
+        weighted_count = 0.0
+
         for block in chain:
+            w = decay_weight(block.timestamp)
+            weighted_count += w
             counterparties.append(block.link_public_key)
+            counterparties_weighted[block.link_public_key] = (
+                counterparties_weighted.get(block.link_public_key, 0.0) + w
+            )
             tx = block.transaction
-            if tx.get("outcome") == "completed":
-                completed += 1
+            if tx.get("outcome") is not None:
+                weighted_total += w
+                if tx.get("outcome") == "completed":
+                    weighted_completed += w
 
-        interaction_count = len(chain)
         unique_counterparties = len(set(counterparties))
-        completion_rate = completed / interaction_count
 
+        # Feature 1: interaction count with decay (saturates at 20).
+        count_score = min(weighted_count / 20.0, 1.0)
+
+        # Feature 2: unique counterparties (structural, no decay).
+        diversity_score = min(unique_counterparties / 5.0, 1.0)
+
+        # Feature 3: completion rate (decay-weighted).
+        if weighted_total > 0:
+            completion_rate = weighted_completed / weighted_total
+        else:
+            completion_rate = 0.0
+
+        # Feature 4: account age (structural, no decay).
         timestamps = [b.timestamp for b in chain]
         account_age = max(timestamps) - min(timestamps) if len(timestamps) > 1 else 0.0
-
-        # Shannon entropy
-        counts = Counter(counterparties)
-        total = sum(counts.values())
-        entropy = 0.0
-        for c in counts.values():
-            p = c / total
-            if p > 0:
-                entropy -= p * math.log2(p)
-        max_entropy = math.log2(unique_counterparties) if unique_counterparties > 1 else 1.0
-        normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0.0
-
-        count_score = min(interaction_count / 20.0, 1.0)
-        diversity_score = min(unique_counterparties / 5.0, 1.0)
         age_score = min(account_age / 60_000.0, 1.0)
+
+        # Feature 5: Shannon entropy (decay-weighted distribution).
+        if unique_counterparties <= 1:
+            normalized_entropy = 0.0
+        else:
+            total_w = sum(counterparties_weighted.values())
+            entropy = 0.0
+            for c in counterparties_weighted.values():
+                p = c / total_w
+                if p > 0:
+                    entropy -= p * math.log2(p)
+            max_entropy = math.log2(unique_counterparties) if unique_counterparties > 1 else 1.0
+            normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0.0
 
         weights = {
             "count": 0.25,

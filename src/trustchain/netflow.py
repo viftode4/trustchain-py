@@ -46,6 +46,22 @@ class NetFlowTrust:
         self.store = store
         self.seeds = seed_nodes
         self.delegation_store = delegation_store
+        # Graph cache: invalidates when block count changes.
+        self._cached_graph: Optional[Dict[str, Dict[str, float]]] = None
+        self._last_block_count: int = 0
+
+    def invalidate_cache(self) -> None:
+        """Explicitly invalidate the cached contribution graph."""
+        self._cached_graph = None
+        self._last_block_count = 0
+
+    def _get_or_build_graph(self) -> Dict[str, Dict[str, float]]:
+        """Return the cached contribution graph, rebuilding if block count changed."""
+        current_count = self.store.get_block_count()
+        if self._cached_graph is None or current_count != self._last_block_count:
+            self._cached_graph = self.build_contribution_graph()
+            self._last_block_count = current_count
+        return self._cached_graph
 
     def _resolve_to_root(self, pubkey: str) -> str:
         """Resolve a pubkey to its root identity if delegated."""
@@ -195,7 +211,7 @@ class NetFlowTrust:
         if target_pubkey in self.seeds:
             return 1.0
 
-        graph = self.build_contribution_graph()
+        graph = self._get_or_build_graph()
         if not graph:
             return 0.0
 
@@ -217,7 +233,7 @@ class NetFlowTrust:
         if not all_pubkeys:
             return {}
 
-        graph = self.build_contribution_graph()
+        graph = self._get_or_build_graph()
         if not graph:
             return {pk: (1.0 if pk in self.seeds else 0.0) for pk in all_pubkeys}
 
