@@ -76,6 +76,18 @@ class TrustChainProtocol:
         - link_sequence_number = 0 (unknown until agreement)
         - Sign with own key, store locally
         """
+        # Scope enforcement: if we are a delegate with a restricted scope,
+        # only allow proposals for interaction types within that scope.
+        if self.delegation_store is not None:
+            my_delegation = self.delegation_store.get_delegation_by_delegate(self.pubkey)
+            if my_delegation is not None and my_delegation.is_active and my_delegation.scope:
+                interaction_type = transaction.get("interaction_type", "")
+                if interaction_type and interaction_type not in my_delegation.scope:
+                    raise DelegationError(
+                        self.pubkey,
+                        detail=f"Interaction type '{interaction_type}' not in delegation scope {my_delegation.scope}",
+                    )
+
         seq = self.store.get_latest_seq(self.pubkey) + 1
         prev_hash = self.store.get_head_hash(self.pubkey)
 
@@ -466,6 +478,12 @@ class TrustChainProtocol:
         if _now_ms() >= tx["expires_at"]:
             raise DelegationError(self.pubkey, detail="Delegation already expired")
 
+        # Check if this delegation was already revoked
+        if self.delegation_store is not None:
+            existing = self.delegation_store.get_delegation(tx["delegation_id"])
+            if existing is not None and existing.revoked:
+                raise DelegationError(self.pubkey, detail="Delegation has been revoked")
+
         # Create agreement
         seq = self.store.get_latest_seq(self.pubkey) + 1
         prev_hash = self.store.get_head_hash(self.pubkey)
@@ -708,13 +726,18 @@ class TrustChainProtocol:
         return self.create_proposal(counterparty_pubkey, enriched_tx, timestamp)
 
     def verify_delegation_certificate(
-        self, cert: DelegationCertificate, proposer_pubkey: str
+        self,
+        cert: DelegationCertificate,
+        proposer_pubkey: str,
+        interaction_type: Optional[str] = None,
     ) -> None:
         """Verify a delegation certificate chain.
 
         Called by the counterparty when receiving a proposal with _delegation.
         Raises DelegationError on any validation failure.
         """
+        from trustchain.identity import Identity
+
         # 1. Certificate is for the proposing agent
         if cert.delegate_pubkey != proposer_pubkey:
             raise DelegationError(proposer_pubkey, detail="Certificate delegate mismatch")
@@ -727,23 +750,44 @@ class TrustChainProtocol:
         if cert.chain_depth > 2:
             raise DelegationError(proposer_pubkey, detail="Delegation chain too deep (max 2)")
 
-        # 4. Verify delegator's signature (the delegation block signature)
+        # 4. Scope enforcement
+        if interaction_type and not cert.scope_matches(interaction_type):
+            raise DelegationError(
+                proposer_pubkey,
+                detail=f"Delegation scope does not cover '{interaction_type}'",
+            )
+
+        # 5. Verify via backing block — the block IS the proof of delegation.
+        # The delegator_signature on the cert is the block's Ed25519 signature
+        # (over the block hash, not the certificate hash). We verify the block
+        # itself to confirm the delegator actually signed the delegation.
         delegator_block = self.store.get_block(cert.delegator_pubkey, cert.delegation_seq)
         if delegator_block is not None:
             if not verify_block(delegator_block):
-                raise SignatureError(
-                    cert.delegator_pubkey, cert.delegation_seq,
-                    detail="Invalid delegator block signature",
+                raise DelegationError(
+                    proposer_pubkey, detail="Invalid delegator block signature"
                 )
+            # Confirm the block hash matches the certificate
+            if delegator_block.block_hash != cert.delegation_block_hash:
+                raise DelegationError(
+                    proposer_pubkey, detail="Delegation block hash mismatch"
+                )
+        elif not cert.delegator_signature:
+            # No block in our store AND no signature on the cert — can't verify
+            raise DelegationError(
+                proposer_pubkey,
+                detail="Cannot verify delegation: no backing block available",
+            )
 
-        # 5. Check revocation
+        # 7. Check revocation
         if self.delegation_store is not None:
+            delegator_block = self.store.get_block(cert.delegator_pubkey, cert.delegation_seq)
             if delegator_block is not None:
                 delegation_id = delegator_block.transaction.get("delegation_id")
                 if delegation_id and self.delegation_store.is_revoked(delegation_id):
                     raise DelegationError(proposer_pubkey, detail="Delegation has been revoked")
 
-        # 6. Verify parent certificate recursively
+        # 8. Verify parent certificate recursively
         if cert.parent_certificate is not None:
             self.verify_delegation_certificate(cert.parent_certificate, cert.delegator_pubkey)
 

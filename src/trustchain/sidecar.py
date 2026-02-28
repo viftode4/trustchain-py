@@ -515,6 +515,38 @@ class TrustChainSidecar:
         """GET /healthz — health check."""
         return self._get("/healthz")
 
+    def chain(self, pubkey: str | None = None) -> list[dict[str, Any]]:
+        """GET /chain/{pubkey} — get the full chain for a pubkey."""
+        pk = pubkey or self.pubkey
+        data = self._get(f"/chain/{pk}")
+        if isinstance(data, dict):
+            return data.get("blocks", [])
+        return data
+
+    def block(self, pubkey: str, seq: int) -> dict[str, Any] | None:
+        """GET /block/{pubkey}/{seq} — get a specific block."""
+        try:
+            data = self._get(f"/block/{pubkey}/{seq}")
+            return data.get("block", data) if isinstance(data, dict) else data
+        except Exception:
+            return None
+
+    def crawl(self, pubkey: str, start_seq: int = 1) -> list[dict[str, Any]]:
+        """GET /crawl/{pubkey} — crawl blocks from a peer."""
+        data = self._get(f"/crawl/{pubkey}?start_seq={start_seq}")
+        if isinstance(data, dict):
+            return data.get("blocks", [])
+        return data
+
+    def metrics(self) -> str:
+        """GET /metrics — Prometheus metrics (returns raw text)."""
+        req = urllib.request.Request(
+            f"{self._base}/metrics",
+            method="GET",
+        )
+        resp = self._opener.open(req, timeout=self._timeout)
+        return resp.read().decode()
+
     def my_delegation(self) -> dict[str, Any] | None:
         """Check if this node is a delegate.
 
@@ -605,7 +637,7 @@ def init_delegate(
 
     # Request delegation from parent
     req = urllib.request.Request(
-        f"{parent_url}/trustchain/delegate",
+        f"{parent_url}/delegate",
         data=json.dumps({
             "delegate_pubkey": sidecar.pubkey,
             "scope": scope or [],

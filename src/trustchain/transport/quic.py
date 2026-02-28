@@ -327,6 +327,12 @@ class QUICTransport(Transport):
             self._server.close()
             self._server = None
 
+        # Close all persistent outbound connections.
+        for peer_id, protocol in list(self._protocols.items()):
+            try:
+                protocol._quic.close()
+            except Exception:
+                pass
         self._protocols.clear()
         logger.info("QUIC transport stopped")
 
@@ -342,16 +348,18 @@ class QUICTransport(Transport):
         config = self._get_client_config()
 
         try:
-            async with quic_connect(
+            # Do NOT use `async with` — that closes the connection on exit.
+            # We need the connection to persist for subsequent send() calls.
+            connection = await quic_connect(
                 peer.host,
                 peer.port,
                 configuration=config,
                 create_protocol=self._create_protocol,
-            ) as protocol:
-                self._protocols[peer_id] = protocol
-                peer.connected = True
-                peer.touch()
-                return protocol
+            ).__aenter__()
+            self._protocols[peer_id] = connection
+            peer.connected = True
+            peer.touch()
+            return connection
         except Exception as e:
             raise TransportError(
                 f"Failed to connect to {peer_id[:16]}...: {e}", peer_id

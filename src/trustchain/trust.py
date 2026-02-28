@@ -97,15 +97,14 @@ class TrustEngine:
 
     def _compute_standard_trust(self, pubkey: str) -> float:
         """Standard trust computation for persistent identities."""
-        # Check for fraud by any active delegate (fraud propagation upward)
+        # Check for fraud by ANY delegate (active OR revoked) — fraud propagation upward.
+        # Revoking a delegation does NOT erase the fraud penalty (IETF §5).
         if self.delegation_store is not None:
             delegations = self.delegation_store.get_delegations_by_delegator(pubkey)
             for d in delegations:
-                if d.is_active:
-                    # Check if the delegate has committed fraud (double-spend)
-                    delegate_chain = self.store.get_chain(d.delegate_pubkey)
-                    if self._has_double_spend(delegate_chain):
-                        return 0.0  # Hard zero: delegate fraud = delegator fraud
+                delegate_chain = self.store.get_chain(d.delegate_pubkey)
+                if self._has_double_spend(delegate_chain):
+                    return 0.0  # Hard zero: delegate fraud = delegator fraud
 
         integrity = self.compute_chain_integrity(pubkey)
         statistical = self.compute_statistical_score(pubkey)
