@@ -9,8 +9,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-import grpc
-from grpc import aio as grpc_aio
+try:
+    import grpc
+    from grpc import aio as grpc_aio
+except ImportError:
+    raise ImportError(
+        "grpcio is required for gRPC transport. "
+        "Install it with: pip install trustchain-sdk[grpc]"
+    ) from None
 
 from trustchain.blockstore import BlockStore
 from trustchain.grpc.service import TrustChainServicer, _build_generic_handlers

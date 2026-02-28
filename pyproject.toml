@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "trustchain-sdk"
-version = "2.0.0"
+version = "2.1.0"
 description = "TrustChain — decentralized trust primitives for Python"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,23 +13,45 @@ authors = [
     { name = "Vlad Levytskyy" },
 ]
 keywords = ["trust", "decentralized", "blockchain", "p2p", "agents"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Topic :: System :: Distributed Computing",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "cryptography>=43.0",
     "networkx>=3.0",
     "fastapi>=0.115",
     "uvicorn>=0.34",
     "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+quic = ["aioquic>=1.2"]
+grpc = ["grpcio>=1.68", "protobuf>=5.29"]
+node = ["hypercorn>=0.17"]
+all = [
+    "aioquic>=1.2",
+    "grpcio>=1.68",
+    "protobuf>=5.29",
+    "hypercorn>=0.17",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
     "aioquic>=1.2",
     "grpcio>=1.68",
     "protobuf>=5.29",
     "hypercorn>=0.17",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
-]
+[project.urls]
+Homepage = "https://github.com/viftode4/trustchain-sdk"
+Repository = "https://github.com/viftode4/trustchain-sdk"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

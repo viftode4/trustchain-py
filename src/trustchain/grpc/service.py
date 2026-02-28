@@ -11,8 +11,14 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-import grpc
-from grpc import aio as grpc_aio
+try:
+    import grpc
+    from grpc import aio as grpc_aio
+except ImportError:
+    raise ImportError(
+        "grpcio is required for gRPC transport. "
+        "Install it with: pip install trustchain-sdk[grpc]"
+    ) from None
 
 from trustchain.blockstore import BlockStore
 from trustchain.halfblock import HalfBlock

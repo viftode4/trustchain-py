@@ -18,7 +18,13 @@ import ssl
 import time
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
-from aioquic.asyncio import connect as quic_connect, serve as quic_serve
+try:
+    from aioquic.asyncio import connect as quic_connect, serve as quic_serve
+except ImportError:
+    raise ImportError(
+        "aioquic is required for QUIC transport. "
+        "Install it with: pip install trustchain-sdk[quic]"
+    ) from None
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import (
