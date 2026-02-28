@@ -1,6 +1,12 @@
 # TrustChain SDK
 
-Python SDK for TrustChain — decentralized trust primitives for agents, humans, and devices.
+[![PyPI](https://img.shields.io/pypi/v/trustchain-sdk.svg)](https://pypi.org/project/trustchain-sdk/)
+[![CI](https://github.com/levvlad/trustchain-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/levvlad/trustchain-sdk/actions)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**Python SDK for TrustChain — decentralized trust primitives for AI agents.**
+
+`trustchain-sdk` is the Python face of the TrustChain trust primitive. At its simplest it is a one-liner (`trustchain.init()`) that downloads and starts the Rust sidecar binary, sets `HTTP_PROXY`, and makes every outbound HTTP call trust-protected. For agents that need full programmatic control it exposes the complete protocol: Ed25519 identities, half-block creation and validation, chain storage, trust computation, NetFlow Sybil resistance, QUIC transport, and gRPC. 290 tests.
 
 ## Installation
 
@@ -8,7 +14,42 @@ Python SDK for TrustChain — decentralized trust primitives for agents, humans,
 pip install trustchain-sdk
 ```
 
+### Optional extras
+
+```bash
+pip install trustchain-sdk[quic]   # QUIC P2P transport (aioquic)
+pip install trustchain-sdk[grpc]   # gRPC client/server (grpcio + protobuf)
+pip install trustchain-sdk[node]   # full Python node (hypercorn ASGI)
+pip install trustchain-sdk[all]    # everything above
+```
+
+Requires Python 3.11+.
+
 ## Quick Start
+
+### Zero-config sidecar (recommended)
+
+```python
+import trustchain
+
+# Downloads the Rust binary if needed, starts the sidecar, sets HTTP_PROXY.
+# All outbound HTTP calls from this process are now trust-protected.
+trustchain.init()
+```
+
+That is the entire integration for most agents. The sidecar runs on port 8203 as a transparent HTTP proxy; agents never call TrustChain directly.
+
+The sidecar binary (`trustchain-node`) must be available. Install it separately:
+
+```bash
+# From crates.io
+cargo install trustchain-node
+
+# Or place the binary at ~/.trustchain/bin/trustchain-node
+# Or download from https://github.com/levvlad/trustchain/releases
+```
+
+### Programmatic protocol usage
 
 ```python
 import trustchain
@@ -17,63 +58,112 @@ import trustchain
 alice = trustchain.Identity()
 bob = trustchain.Identity()
 
-# Create a protocol instance
-protocol = trustchain.TrustChainProtocol()
+# Create a protocol instance backed by an in-memory block store
+store = trustchain.MemoryBlockStore()
+protocol = trustchain.TrustChainProtocol(alice, store)
 
-# Propose an interaction
-proposal = protocol.propose(alice, bob, transaction={"type": "service", "outcome": "completed"})
+# Alice proposes an interaction with Bob
+proposal = protocol.create_proposal(
+    bob.pubkey_hex,
+    {"type": "service_call", "outcome": "completed"},
+)
 
-# Bob agrees
-agreement = protocol.agree(bob, proposal)
+# Bob validates the proposal and creates the counter-signed agreement
+bob_protocol = trustchain.TrustChainProtocol(bob, store)
+agreement = bob_protocol.create_agreement(proposal)
+
+print(f"Block pair recorded: seq={proposal.sequence_number}")
 ```
 
-### Zero-config sidecar (with Rust binary)
+### Trust scoring
 
 ```python
-import trustchain
+from trustchain.trust import TrustEngine
+from trustchain.blockstore import SqliteBlockStore
 
-# Start the TrustChain sidecar — all HTTP calls are now trust-protected
-trustchain.init()
+store = SqliteBlockStore("agent.db")
+engine = TrustEngine(store)
 
-# That's it. Every outbound HTTP request goes through the transparent proxy.
+score = engine.compute_trust(peer_pubkey)
+print(f"Trust score for peer: {score:.3f}")  # 0.0 to 1.0
 ```
 
-## Installing the Rust Binary
+### SQLite-backed node
 
-The sidecar requires the `trustchain-node` binary. Install it via:
+```python
+import asyncio
+from trustchain.api import TrustChainNode
 
-```bash
-# From crates.io
-cargo install trustchain-node
+async def main():
+    node = TrustChainNode(db_path="agent.db")
+    await node.start()          # serves HTTP REST on :8202
+    await node.run_forever()
 
-# Or download from GitHub Releases
-# https://github.com/levvlad/trustchain/releases
-
-# Or place the binary at ~/.trustchain/bin/trustchain-node
+asyncio.run(main())
 ```
 
 ## Modules
 
 | Module | Description |
 |--------|-------------|
-| `trustchain.identity` | Ed25519 identity management |
-| `trustchain.halfblock` | Half-block data structure and validation |
-| `trustchain.blockstore` | Block storage (memory + SQLite) |
-| `trustchain.protocol` | Protocol state machine |
-| `trustchain.trust` | Trust computation engine |
-| `trustchain.netflow` | NetFlow Sybil resistance |
-| `trustchain.consensus` | CHECO consensus |
-| `trustchain.chain` | Chain operations and validation |
-| `trustchain.crawler` | Network crawler and DAG view |
-| `trustchain.transport` | QUIC, HTTP, discovery, connection pooling |
-| `trustchain.grpc` | gRPC client/server |
-| `trustchain.api` | FastAPI HTTP node |
-| `trustchain.sidecar` | Rust binary manager (zero-config) |
+| `trustchain.identity` | Ed25519 keypair generation, loading, and serialization |
+| `trustchain.halfblock` | `HalfBlock` data structure, signing, and validation |
+| `trustchain.blockstore` | `MemoryBlockStore` and `SqliteBlockStore` |
+| `trustchain.protocol` | `TrustChainProtocol` — proposal/agreement state machine |
+| `trustchain.trust` | `TrustEngine` — weighted three-component trust scoring |
+| `trustchain.netflow` | NetFlow Sybil resistance (max-flow from seed nodes) |
+| `trustchain.consensus` | CHECO checkpoint consensus |
+| `trustchain.chain` | Chain operations, validation, and gap detection |
+| `trustchain.crawler` | Network graph crawler and DAG view builder |
+| `trustchain.transport` | QUIC P2P, HTTP connection pooling, peer discovery |
+| `trustchain.grpc` | gRPC client and server (requires `[grpc]` extra) |
+| `trustchain.api` | FastAPI HTTP node (full REST API, same endpoints as Rust) |
+| `trustchain.sidecar` | Rust binary manager — download, start, health-check, proxy setup |
+| `trustchain.delegation` | Identity delegation, succession, and revocation |
+
+## Trust Score Components
+
+`TrustEngine.compute_trust(pubkey)` returns a weighted score from three components:
+
+| Component | Weight | What it measures |
+|-----------|--------|-----------------|
+| **Chain Integrity** | 30% | Hash links valid, no sequence gaps, Ed25519 signatures verify |
+| **NetFlow** | 40% | Max-flow from seed nodes — primary Sybil resistance |
+| **Statistical** | 30% | Volume, completion rate, counterparty diversity, account age, entropy |
+
+## Architecture
+
+```
+Your Python agent
+      │
+      ├── trustchain.init()          sets HTTP_PROXY → Rust sidecar (:8203)
+      │                              (transparent, zero-code-change integration)
+      │
+      └── trustchain.TrustChainProtocol  (full programmatic control)
+              │
+              ├── Identity           Ed25519 keypair
+              ├── BlockStore         MemoryBlockStore / SqliteBlockStore
+              ├── TrustEngine        NetFlow + chain integrity + statistical
+              └── Transport          QUIC P2P / HTTP REST / gRPC
+```
+
+The Python SDK's `trustchain.api.TrustChainNode` implements the same HTTP REST API as the Rust binary. The Rust binary is recommended for production deployments; the Python node is useful for testing and environments where the binary is unavailable.
+
+> **Note**: The sidecar delegation API endpoints (`/trustchain/delegate` etc.) are implemented in the Python SDK's `TrustChainNode` only. The Rust sidecar does not expose these endpoints — use the standard `/delegate` and `/revoke` REST endpoints on the Rust node's HTTP API instead.
+
+## Development
+
+```bash
+git clone https://github.com/levvlad/trustchain-sdk.git
+cd trustchain-sdk
+pip install -e ".[dev]"
+pytest tests/ -v
+```
 
 ## Related Projects
 
-- [trustchain](https://github.com/levvlad/trustchain) — Rust node and core crates
-- [trustchain-agent-os](https://github.com/levvlad/trustchain-agent-os) — Agent framework with trust-native protocol layer
+- [trustchain](https://github.com/levvlad/trustchain) — Rust node: production sidecar binary, core crates, QUIC P2P, MCP server
+- [trustchain-agent-os](https://github.com/levvlad/trustchain-agent-os) — Agent framework adapters (LangGraph, CrewAI, AutoGen, OpenAI Agents, Google ADK, ElizaOS)
 
 ## License
 
