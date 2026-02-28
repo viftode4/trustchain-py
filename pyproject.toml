@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trustchain-sdk"
+version = "2.0.0"
+description = "TrustChain — decentralized trust primitives for Python"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    { name = "Vlad Levytskyy" },
+]
+keywords = ["trust", "decentralized", "blockchain", "p2p", "agents"]
+dependencies = [
+    "cryptography>=43.0",
+    "networkx>=3.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "httpx>=0.28",
+    "aioquic>=1.2",
+    "grpcio>=1.68",
+    "protobuf>=5.29",
+    "hypercorn>=0.17",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trustchain"]
