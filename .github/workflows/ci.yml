@@ -8,11 +8,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
-
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -21,11 +22,89 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short
+
+  integration:
+    name: Integration (SDK + Rust binary)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out SDK
+        uses: actions/checkout@v4
+
+      - name: Check out Rust workspace
+        uses: actions/checkout@v4
+        with:
+          repository: viftode4/trustchain
+          path: trustchain-rs
+          ref: master
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: trustchain-rs
+
+      - name: Install protobuf compiler (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install protobuf compiler (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc -y
+
+      - name: Build Rust binary
+        working-directory: trustchain-rs
+        run: cargo build --release -p trustchain-node
+
+      - name: Set TRUSTCHAIN_BIN path (Unix)
+        if: runner.os != 'Windows'
+        run: echo "TRUSTCHAIN_BIN=${{ github.workspace }}/trustchain-rs/target/release/trustchain-node" >> "$GITHUB_ENV"
+
+      - name: Set TRUSTCHAIN_BIN path (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "TRUSTCHAIN_BIN=${{ github.workspace }}/trustchain-rs/target/release/trustchain-node.exe" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install SDK
+        run: pip install -e ".[dev]"
+
+      - name: Verify Rust binary exists
+        shell: bash
+        run: |
+          echo "TRUSTCHAIN_BIN=$TRUSTCHAIN_BIN"
+          ls -la "$TRUSTCHAIN_BIN"
+
+      - name: Run SDK tests with Rust binary
+        run: python -m pytest tests/ -v --tb=short
+        env:
+          TRUSTCHAIN_BIN: ${{ env.TRUSTCHAIN_BIN }}
 
   lint:
     runs-on: ubuntu-latest
