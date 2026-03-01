@@ -163,7 +163,7 @@ class SQLiteBlockStore(BlockStore, DelegationStore):
                 block_type TEXT NOT NULL,
                 tx_data TEXT NOT NULL,
                 block_hash TEXT NOT NULL,
-                "timestamp" REAL NOT NULL,
+                "timestamp" INTEGER NOT NULL,
                 insert_time REAL NOT NULL,
                 PRIMARY KEY (public_key, sequence_number)
             );
@@ -223,7 +223,7 @@ class SQLiteBlockStore(BlockStore, DelegationStore):
             block_type=row["block_type"],
             transaction=json.loads(row["tx_data"]),
             block_hash=row["block_hash"],
-            timestamp=row["timestamp"],
+            timestamp=int(row["timestamp"]),
         )
 
     def add_block(self, block: HalfBlock) -> None:
@@ -379,7 +379,7 @@ class SQLiteBlockStore(BlockStore, DelegationStore):
         return [self._row_to_delegation(r) for r in rows]
 
     def get_delegation_by_delegate(self, delegate_pubkey: str) -> Optional[DelegationRecord]:
-        now = time.time()
+        now = int(time.time() * 1000)
         row = self._conn.execute(
             """SELECT * FROM delegations
                WHERE delegate_pubkey = ? AND revoked = 0 AND expires_at > ?
@@ -389,7 +389,7 @@ class SQLiteBlockStore(BlockStore, DelegationStore):
         return self._row_to_delegation(row) if row else None
 
     def get_active_delegation_count(self, delegator_pubkey: str) -> int:
-        now = time.time()
+        now = int(time.time() * 1000)
         row = self._conn.execute(
             """SELECT COUNT(*) as cnt FROM delegations
                WHERE delegator_pubkey = ? AND revoked = 0 AND expires_at > ?""",

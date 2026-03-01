@@ -198,3 +198,53 @@ class TestNormalizationBounds:
         trust_b = netflow.compute_trust(identity_b.pubkey_hex)
         trust_c = netflow.compute_trust(identity_c.pubkey_hex)
         assert trust_b >= trust_c
+
+    def test_incremental_cache_update(self, identity_a, identity_b, identity_c):
+        """Incremental update adds new edges without full rebuild."""
+        store = MemoryBlockStore()
+        nf = NetFlowTrust(store, [identity_a.pubkey_hex])
+
+        # First interaction.
+        p1, a1 = _create_transaction_pair(store, identity_a, identity_b, 1, 1, GENESIS_HASH, GENESIS_HASH)
+
+        score1 = nf.compute_trust(identity_b.pubkey_hex)
+        assert score1 > 0.0
+        assert nf._known_seqs.get(identity_a.pubkey_hex) == 1
+        assert nf._known_seqs.get(identity_b.pubkey_hex) == 1
+
+        # Add second interaction — should trigger incremental update.
+        p2, a2 = _create_transaction_pair(
+            store, identity_a, identity_c, 2, 1,
+            p1.block_hash, GENESIS_HASH,
+        )
+
+        score_c = nf.compute_trust(identity_c.pubkey_hex)
+        assert score_c > 0.0
+        # Verify known_seqs updated.
+        assert nf._known_seqs.get(identity_a.pubkey_hex) == 2
+        assert nf._known_seqs.get(identity_c.pubkey_hex) == 1
+
+    def test_incremental_matches_full_rebuild(self, identity_a, identity_b, identity_c):
+        """Incremental update produces the same results as a full rebuild."""
+        store = MemoryBlockStore()
+        nf_incremental = NetFlowTrust(store, [identity_a.pubkey_hex])
+
+        # First interaction — triggers full build.
+        p1, a1 = _create_transaction_pair(store, identity_a, identity_b, 1, 1, GENESIS_HASH, GENESIS_HASH)
+        nf_incremental.compute_trust(identity_b.pubkey_hex)
+
+        # Second interaction — triggers incremental.
+        p2, a2 = _create_transaction_pair(
+            store, identity_a, identity_c, 2, 1,
+            p1.block_hash, GENESIS_HASH,
+        )
+        score_b_inc = nf_incremental.compute_trust(identity_b.pubkey_hex)
+        score_c_inc = nf_incremental.compute_trust(identity_c.pubkey_hex)
+
+        # Fresh full rebuild for comparison.
+        nf_full = NetFlowTrust(store, [identity_a.pubkey_hex])
+        score_b_full = nf_full.compute_trust(identity_b.pubkey_hex)
+        score_c_full = nf_full.compute_trust(identity_c.pubkey_hex)
+
+        assert abs(score_b_inc - score_b_full) < 1e-9
+        assert abs(score_c_inc - score_c_full) < 1e-9

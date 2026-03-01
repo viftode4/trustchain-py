@@ -538,14 +538,34 @@ class TrustChainSidecar:
             return data.get("blocks", [])
         return data
 
+    def receive_proposal(self, block: dict[str, Any]) -> dict[str, Any]:
+        """POST /receive_proposal — receive a proposal block from a peer."""
+        return self._post("/receive_proposal", block)
+
+    def receive_agreement(self, block: dict[str, Any]) -> dict[str, Any]:
+        """POST /receive_agreement — receive an agreement block from a peer."""
+        return self._post("/receive_agreement", block)
+
+    def accept_delegation(self, proposal_block: dict[str, Any]) -> dict[str, Any]:
+        """POST /accept_delegation — accept a delegation proposal."""
+        return self._post("/accept_delegation", {"proposal_block": proposal_block})
+
+    def accept_succession(self, proposal_block: dict[str, Any]) -> dict[str, Any]:
+        """POST /accept_succession — accept a succession proposal."""
+        return self._post("/accept_succession", {"proposal_block": proposal_block})
+
     def metrics(self) -> str:
         """GET /metrics — Prometheus metrics (returns raw text)."""
-        req = urllib.request.Request(
-            f"{self._base}/metrics",
-            method="GET",
-        )
-        resp = self._opener.open(req, timeout=self._timeout)
-        return resp.read().decode()
+        url = f"{self.http_url}/metrics"
+        req = urllib.request.Request(url, method="GET")
+        try:
+            resp = _direct_opener.open(req, timeout=5)
+            return resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            raise RuntimeError(f"GET /metrics failed ({exc.code}): {body}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"GET /metrics failed: {exc.reason}") from exc
 
     def my_delegation(self) -> dict[str, Any] | None:
         """Check if this node is a delegate.
@@ -653,5 +673,10 @@ def init_delegate(
             raise RuntimeError(f"Delegation rejected: {data.get('error', 'unknown')}")
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Failed to request delegation from {parent_url}: {exc}") from exc
+
+    # Complete the bilateral handshake: accept the delegation on the delegate sidecar.
+    proposal_block = data.get("proposal_block") or data.get("block")
+    if proposal_block:
+        sidecar.accept_delegation(proposal_block)
 
     return sidecar

@@ -122,3 +122,51 @@ def build_star_network(
 
     spoke_pks = [a.pubkey_hex for a in agents]
     return store, seed_pk, spoke_pks
+
+
+def build_mesh_network(
+    n_agents: int, avg_degree: int = 3, interactions_per_edge: int = 2
+) -> tuple[MemoryBlockStore, list[str]]:
+    """Build mesh topology: each agent connects to avg_degree deterministic neighbors."""
+    identities = [Identity() for _ in range(n_agents)]
+    pubkeys = [i.pubkey_hex for i in identities]
+    store = MemoryBlockStore()
+    state = ChainState()
+
+    for i in range(n_agents):
+        for d in range(1, avg_degree + 1):
+            j = (i + d) % n_agents
+            if j == i:
+                continue
+            for _ in range(interactions_per_edge):
+                i_seq = state.next_seq(pubkeys[i])
+                i_prev = state.prev_hash(pubkeys[i])
+                proposal = create_half_block(
+                    identity=identities[i],
+                    sequence_number=i_seq,
+                    link_public_key=pubkeys[j],
+                    link_sequence_number=0,
+                    previous_hash=i_prev,
+                    block_type=BlockType.PROPOSAL,
+                    transaction={"interaction_type": "service", "outcome": "completed"},
+                    timestamp=1000 + i_seq,
+                )
+                store.add_block(proposal)
+                state.update(proposal)
+
+                j_seq = state.next_seq(pubkeys[j])
+                j_prev = state.prev_hash(pubkeys[j])
+                agreement = create_half_block(
+                    identity=identities[j],
+                    sequence_number=j_seq,
+                    link_public_key=pubkeys[i],
+                    link_sequence_number=i_seq,
+                    previous_hash=j_prev,
+                    block_type=BlockType.AGREEMENT,
+                    transaction={"interaction_type": "service", "outcome": "completed"},
+                    timestamp=1001 + j_seq,
+                )
+                store.add_block(agreement)
+                state.update(agreement)
+
+    return store, pubkeys

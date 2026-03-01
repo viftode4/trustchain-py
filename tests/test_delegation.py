@@ -686,8 +686,9 @@ class TestDelegatedTrust:
         # Orchestrator = op_trust / 1 (sole delegate)
         assert abs(orch_trust - op_trust) < 0.01
 
-        # Worker = orch_trust / 1 * 0.5 (depth discount)
-        assert abs(worker_trust - orch_trust * 0.5) < 0.01
+        # Worker = root_trust / active_count (flat split, no depth discount — matches Rust)
+        # Root is operator, who has 1 active delegation, so worker_trust == op_trust / 1
+        assert abs(worker_trust - op_trust) < 0.01
 
 
 # ===========================================================================
@@ -857,10 +858,10 @@ class TestDelegationE2E:
         orch_trust = engine.compute_trust(orch.pubkey_hex)
         worker_trust = engine.compute_trust(worker.pubkey_hex)
 
-        # Single delegation: orchestrator gets full budget (trust/1 = trust)
-        # Sub-delegation gets 0.5 depth discount
-        assert op_trust >= orch_trust > worker_trust > 0
-        assert abs(worker_trust - orch_trust * 0.5) < 0.01
+        # Flat budget split (matches Rust): all delegates get root_trust / active_count
+        # Operator has 1 delegate, so orch == op_trust; worker resolves to same root
+        assert op_trust >= orch_trust > 0
+        assert abs(worker_trust - op_trust) < 0.01
 
     def test_revocation_stops_delegated_interactions(self, store, dstore):
         """After revocation, delegate trust drops to 0."""

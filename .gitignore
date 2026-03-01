@@ -9,3 +9,9 @@ build/
 .pytest_cache/
 .venv/
 venv/
+
+# Secrets
+.env
+.env.*
+*.key
+credentials.json

@@ -137,8 +137,9 @@ class TrustEngine:
     ) -> float:
         """Compute trust for a delegated identity.
 
-        Trust budget splits across active delegations (IETF §5 Sybil resistance).
-        Depth discount: 0.5 per level beyond direct delegation.
+        Matches Rust TrustEngine: flat budget split from the root identity's trust.
+        effective = root_trust / active_delegation_count_at_root
+        No per-level split or depth discount (IETF §5 Sybil resistance).
         """
         # Check expiry
         if not delegation.is_active:
@@ -155,17 +156,10 @@ class TrustEngine:
         # Compute the root's trust (standard computation)
         root_trust = self._compute_standard_trust(root_pubkey)
 
-        # Apply budget splitting and depth discount
-        chain = self._build_delegation_chain(delegation)
-        effective = root_trust
-        for i, deleg in enumerate(chain):
-            active_count = self.delegation_store.get_active_delegation_count(
-                deleg.delegator_pubkey
-            )
-            active_count = max(active_count, 1)  # avoid division by zero
-            effective = effective / active_count
-            if i > 0:  # depth discount for sub-delegations
-                effective *= 0.5
+        # Flat budget split: root_trust / active_delegation_count at root level
+        active_count = self.delegation_store.get_active_delegation_count(root_pubkey)
+        active_count = max(active_count, 1)  # avoid division by zero
+        effective = root_trust / active_count
 
         return round(min(max(effective, 0.0), 1.0), 3)
 
@@ -300,10 +294,21 @@ class TrustEngine:
         diversity_score = min(unique_counterparties / 5.0, 1.0)
 
         # Feature 3: completion rate (decay-weighted).
+        # Matches Rust: falls back to proposal/agreement pairing via linked blocks
+        # when no blocks have an explicit outcome field.
         if weighted_total > 0:
             completion_rate = weighted_completed / weighted_total
         else:
-            completion_rate = 0.0
+            # Fallback: check linked blocks (proposals that have agreements).
+            proposals = [b for b in chain if b.block_type == "proposal"]
+            if not proposals:
+                completion_rate = 1.0
+            else:
+                completed = sum(
+                    1 for p in proposals
+                    if self.store.get_linked_block(p) is not None
+                )
+                completion_rate = completed / len(proposals)
 
         # Feature 4: account age (structural, no decay).
         timestamps = [b.timestamp for b in chain]

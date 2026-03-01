@@ -42,6 +42,10 @@ class Peer:
 class SimulatedNetwork:
     """Simulated P2P network for TrustChain block creation and exchange.
 
+    .. deprecated::
+        This is a v1 test harness using agent-attested signing. For production,
+        use the v2 half-block protocol via ``TrustChainSidecar`` and the Rust node.
+
     This is the reference implementation of the correct TrustChain protocol flow:
     reads seq/prev_hash from chain state (not store queries), creates records,
     validates+appends to both chains, then persists.
