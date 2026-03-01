@@ -4,10 +4,10 @@
 
 ### Breaking Changes
 - `aioquic`, `grpcio`, `protobuf`, and `hypercorn` are now **optional** dependencies
-  - Base install: `pip install trustchain-sdk` (lightweight, HTTP-only)
-  - QUIC transport: `pip install trustchain-sdk[quic]`
-  - gRPC transport: `pip install trustchain-sdk[grpc]`
-  - Full install: `pip install trustchain-sdk[all]`
+  - Base install: `pip install trustchain-py` (lightweight, HTTP-only)
+  - QUIC transport: `pip install trustchain-py[quic]`
+  - gRPC transport: `pip install trustchain-py[grpc]`
+  - Full install: `pip install trustchain-py[all]`
 
 ### Features
 - **Delegation certificate verification**: verify via backing block signature

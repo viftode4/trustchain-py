@@ -23,7 +23,7 @@ try:
 except ImportError:
     raise ImportError(
         "aioquic is required for QUIC transport. "
-        "Install it with: pip install trustchain-sdk[quic]"
+        "Install it with: pip install trustchain-py[quic]"
     ) from None
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.quic.configuration import QuicConfiguration

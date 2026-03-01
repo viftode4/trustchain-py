@@ -16,7 +16,7 @@ try:
 except ImportError:
     raise ImportError(
         "grpcio is required for gRPC transport. "
-        "Install it with: pip install trustchain-sdk[grpc]"
+        "Install it with: pip install trustchain-py[grpc]"
     ) from None
 
 from trustchain.halfblock import HalfBlock

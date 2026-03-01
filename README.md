@@ -1,26 +1,26 @@
-# TrustChain SDK
+# TrustChain Python SDK
 
-[![PyPI](https://img.shields.io/pypi/v/trustchain-sdk.svg)](https://pypi.org/project/trustchain-sdk/)
-[![CI](https://github.com/levvlad/trustchain-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/levvlad/trustchain-sdk/actions)
+[![PyPI](https://img.shields.io/pypi/v/trustchain-py.svg)](https://pypi.org/project/trustchain-py/)
+[![CI](https://github.com/viftode4/trustchain-py/actions/workflows/ci.yml/badge.svg)](https://github.com/viftode4/trustchain-py/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Python SDK for TrustChain — decentralized trust primitives for AI agents.**
 
-`trustchain-sdk` is the Python face of the TrustChain trust primitive. At its simplest it is a one-liner (`trustchain.init()`) that downloads and starts the Rust sidecar binary, sets `HTTP_PROXY`, and makes every outbound HTTP call trust-protected. For agents that need full programmatic control it exposes the complete protocol: Ed25519 identities, half-block creation and validation, chain storage, trust computation, NetFlow Sybil resistance, QUIC transport, and gRPC. 290 tests.
+`trustchain-py` is the Python face of the TrustChain trust primitive. At its simplest it is a one-liner (`trustchain.init()`) that downloads and starts the Rust sidecar binary, sets `HTTP_PROXY`, and makes every outbound HTTP call trust-protected. For agents that need full programmatic control it exposes the complete protocol: Ed25519 identities, half-block creation and validation, chain storage, trust computation, NetFlow Sybil resistance, QUIC transport, and gRPC. 290 tests.
 
 ## Installation
 
 ```bash
-pip install trustchain-sdk
+pip install trustchain-py
 ```
 
 ### Optional extras
 
 ```bash
-pip install trustchain-sdk[quic]   # QUIC P2P transport (aioquic)
-pip install trustchain-sdk[grpc]   # gRPC client/server (grpcio + protobuf)
-pip install trustchain-sdk[node]   # full Python node (hypercorn ASGI)
-pip install trustchain-sdk[all]    # everything above
+pip install trustchain-py[quic]   # QUIC P2P transport (aioquic)
+pip install trustchain-py[grpc]   # gRPC client/server (grpcio + protobuf)
+pip install trustchain-py[node]   # full Python node (hypercorn ASGI)
+pip install trustchain-py[all]    # everything above
 ```
 
 Requires Python 3.11+.
@@ -154,8 +154,8 @@ The Python SDK's `trustchain.api.TrustChainNode` implements the same HTTP REST A
 ## Development
 
 ```bash
-git clone https://github.com/levvlad/trustchain-sdk.git
-cd trustchain-sdk
+git clone https://github.com/levvlad/trustchain-py.git
+cd trustchain-py
 pip install -e ".[dev]"
 pytest tests/ -v
 ```
