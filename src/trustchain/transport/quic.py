@@ -255,6 +255,12 @@ class QUICTransport(Transport):
         # Connection management
         self.pool = ConnectionPool(idle_timeout=idle_timeout)
         self._protocols: Dict[str, TrustChainQuicProtocol] = {}
+        # Keep a reference to each quic_connect() context manager so it is NOT
+        # garbage collected prematurely.  When an @asynccontextmanager generator
+        # is GC'd without __aexit__ being called, Python throws GeneratorExit
+        # into it, which triggers the `finally: protocol.close()` block inside
+        # aioquic's connect() — closing the connection seconds after it opens.
+        self._connect_ctx: Dict[str, Any] = {}
         self._server = None
         self._server_task = None
 
@@ -333,12 +339,15 @@ class QUICTransport(Transport):
             self._server.close()
             self._server = None
 
-        # Close all persistent outbound connections.
-        for peer_id, protocol in list(self._protocols.items()):
+        # Close all persistent outbound connections by properly exiting their
+        # context managers.  This calls protocol.close() + wait_closed() inside
+        # aioquic's connect() finally block, which is the correct teardown path.
+        for peer_id, ctx in list(self._connect_ctx.items()):
             try:
-                protocol._quic.close()
+                await ctx.__aexit__(None, None, None)
             except Exception:
                 pass
+        self._connect_ctx.clear()
         self._protocols.clear()
         logger.info("QUIC transport stopped")
 
@@ -354,14 +363,21 @@ class QUICTransport(Transport):
         config = self._get_client_config()
 
         try:
-            # Do NOT use `async with` — that closes the connection on exit.
-            # We need the connection to persist for subsequent send() calls.
-            connection = await quic_connect(
+            # Hold the context manager object alive in self._connect_ctx so that
+            # the aioquic generator is NOT garbage collected.  If the generator
+            # goes out of scope without __aexit__ being called, CPython throws
+            # GeneratorExit into it, which triggers `finally: protocol.close()`
+            # inside aioquic's connect() and closes the connection immediately
+            # after it opens — causing the pending-response future to be
+            # cancelled before the server response arrives.
+            ctx = quic_connect(
                 peer.host,
                 peer.port,
                 configuration=config,
                 create_protocol=self._create_protocol,
-            ).__aenter__()
+            )
+            connection = await ctx.__aenter__()
+            self._connect_ctx[peer_id] = ctx  # keep the generator alive
             self._protocols[peer_id] = connection
             peer.connected = True
             peer.touch()
@@ -379,8 +395,14 @@ class QUICTransport(Transport):
         try:
             return await protocol.send_message(message)
         except Exception as e:
-            # Clean up failed connection
+            # Clean up failed connection (protocol AND its context manager).
             self._protocols.pop(peer_id, None)
+            ctx = self._connect_ctx.pop(peer_id, None)
+            if ctx is not None:
+                try:
+                    await ctx.__aexit__(None, None, None)
+                except Exception:
+                    pass
             if not isinstance(e, TransportError):
                 raise TransportError(str(e), peer_id)
             raise

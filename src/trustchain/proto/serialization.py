@@ -124,7 +124,7 @@ def halfblock_to_proto(block: HalfBlock) -> bytes:
       7: block_type (string)
       8: transaction (bytes, JSON-encoded)
       9: block_hash (string)
-     10: timestamp (double)
+     10: timestamp (uint64, milliseconds since epoch)
     """
     parts = []
     if block.public_key:
@@ -147,7 +147,11 @@ def halfblock_to_proto(block: HalfBlock) -> bytes:
 
     if block.block_hash:
         parts.append(_encode_string_field(9, block.block_hash))
-    parts.append(_encode_double_field(10, block.timestamp))
+    # Encode timestamp as uint64 (varint) — wire-compatible with Rust u64.
+    # Must NOT use double/float64 here: JSON serializes int 1234 vs float 1234.0
+    # differently, so a float roundtrip would corrupt the canonical block hash and
+    # break Ed25519 signature verification on the receiver side.
+    parts.append(_encode_uint64_field(10, int(block.timestamp)))
 
     return b"".join(parts)
 
@@ -212,7 +216,11 @@ def proto_to_halfblock(data: bytes) -> HalfBlock:
         block_type=get_str(7),
         transaction=transaction,
         block_hash=get_str(9),
-        timestamp=get_float(10),
+        # Decode as int to match HalfBlock.timestamp type (int milliseconds).
+        # Field 10 is now encoded as uint64 varint; get_int() handles both the
+        # new uint64 varint path and legacy double (WIRETYPE_FIXED64) path via
+        # int() conversion, preserving backward compatibility.
+        timestamp=get_int(10),
     )
 
 
