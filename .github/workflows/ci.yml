@@ -53,6 +53,7 @@ jobs:
           repository: viftode4/trustchain
           path: trustchain-rs
           ref: master
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
