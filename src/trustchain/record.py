@@ -23,7 +23,7 @@ class InteractionRecord:
     prev_hash_b: str
     interaction_type: str  # service, payment, etc.
     outcome: str  # completed, failed, disputed
-    timestamp: float = field(default_factory=time.time)
+    timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
     sig_a: bytes = b""
     sig_b: bytes = b""
 

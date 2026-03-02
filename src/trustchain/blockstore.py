@@ -398,7 +398,7 @@ class SQLiteBlockStore(BlockStore, DelegationStore):
         return row["cnt"]
 
     def revoke_delegation(self, delegation_id: str, revocation_block_hash: str) -> None:
-        now = time.time()
+        now = int(time.time() * 1000)
         self._conn.execute(
             """UPDATE delegations SET revoked = 1, revocation_block_hash = ?, revoked_at = ?
                WHERE delegation_id = ?""",
@@ -430,7 +430,7 @@ class SQLiteBlockStore(BlockStore, DelegationStore):
             self._conn.execute(
                 """INSERT INTO successions (old_pubkey, new_pubkey, succession_block_hash, created_at)
                    VALUES (?, ?, ?, ?)""",
-                (old_pubkey, new_pubkey, succession_block_hash, time.time()),
+                (old_pubkey, new_pubkey, succession_block_hash, int(time.time() * 1000)),
             )
             self._conn.commit()
         except sqlite3.IntegrityError:

@@ -43,7 +43,7 @@ class TransportMessage:
     msg_type: MessageType
     payload: bytes
     sender_pubkey: str
-    timestamp: float = field(default_factory=time.time)
+    timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
 
 
 class TransportError(Exception):

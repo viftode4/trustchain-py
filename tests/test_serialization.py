@@ -71,7 +71,7 @@ class TestHalfBlockProtoRoundTrip:
         assert restored.block_type == block.block_type
         assert restored.transaction == block.transaction
         assert restored.block_hash == block.block_hash
-        assert abs(restored.timestamp - block.timestamp) < 0.001
+        assert restored.timestamp == block.timestamp
 
     def test_roundtrip_agreement(self):
         alice = Identity()
@@ -156,14 +156,14 @@ class TestEnvelopeRoundTrip:
             msg_type=MessageType.PROPOSE,
             payload=payload,
             sender_pubkey=sender,
-            timestamp=1700000000.0,
+            timestamp=1700000000000,
         )
         decoded = decode_envelope(encoded)
 
         assert decoded.msg_type == MessageType.PROPOSE
         assert decoded.payload == payload
         assert decoded.sender_pubkey == sender
-        assert abs(decoded.timestamp - 1700000000.0) < 0.001
+        assert decoded.timestamp == 1700000000000
 
     def test_all_message_types(self):
         for mt in MessageType:
@@ -171,7 +171,7 @@ class TestEnvelopeRoundTrip:
                 msg_type=mt,
                 payload=b"test",
                 sender_pubkey="abc",
-                timestamp=1.0,
+                timestamp=1000,
             )
             decoded = decode_envelope(encoded)
             assert decoded.msg_type == mt

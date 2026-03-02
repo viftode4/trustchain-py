@@ -231,7 +231,7 @@ def encode_envelope(
     msg_type: MessageType,
     payload: bytes,
     sender_pubkey: str,
-    timestamp: Optional[float] = None,
+    timestamp: Optional[int] = None,
 ) -> bytes:
     """Encode a transport envelope to protobuf-compatible binary.
 
@@ -285,7 +285,7 @@ def decode_envelope(data: bytes) -> TransportMessage:
     if isinstance(sender, bytes):
         sender = sender.decode("utf-8")
 
-    ts = float(fields.get(4, 0.0))
+    ts = int(fields.get(4, 0))
 
     return TransportMessage(
         msg_type=MessageType(msg_type_val),

@@ -277,7 +277,7 @@ def compute_trust(pubkey: str, store: RecordStore) -> float:
 
     count_score = min(interaction_count / 20.0, 1.0)
     diversity_score = min(unique_counterparties / 5.0, 1.0)
-    age_score = min(account_age / 60.0, 1.0)
+    age_score = min(account_age / 60_000, 1.0)  # milliseconds
 
     weights = {
         "count": 0.25,
@@ -373,9 +373,13 @@ def compute_chain_trust(
 
 
 def compute_trust_with_decay(
-    pubkey: str, store: RecordStore, half_life: float = 30.0, now: Optional[float] = None
+    pubkey: str, store: RecordStore, half_life: float = 30_000, now: Optional[int] = None
 ) -> float:
     """Compute trust with time-decay weighting on interaction records.
+
+    Args:
+        half_life: Decay half-life in milliseconds (default 30s = 30_000ms).
+        now: Current time in milliseconds since epoch.
 
     .. deprecated:: 2.0
         Use ``TrustEngine.compute_trust()`` for v2 scoring.
@@ -387,7 +391,7 @@ def compute_trust_with_decay(
         return 0.0
 
     if now is None:
-        now = _time.time()
+        now = int(_time.time() * 1000)
 
     counterparties: List[str] = []
     weighted_completed = 0.0
@@ -409,7 +413,7 @@ def compute_trust_with_decay(
 
     timestamps = [r.timestamp for r in records]
     account_age = max(timestamps) - min(timestamps) if len(timestamps) > 1 else 0.0
-    age_score = min(account_age / 60.0, 1.0)
+    age_score = min(account_age / 60_000, 1.0)  # milliseconds
 
     counts = Counter(counterparties)
     total_counts = sum(counts.values())

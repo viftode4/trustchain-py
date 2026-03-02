@@ -25,7 +25,7 @@ class HalfBlock:
     block_hash: str
     interaction_type: str
     outcome: str
-    timestamp: float
+    timestamp: int
 
 
 class Block:
