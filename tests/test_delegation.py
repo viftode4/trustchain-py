@@ -26,7 +26,7 @@ from trustchain.delegation import (
 from trustchain.exceptions import DelegationError, SuccessionError
 from trustchain.halfblock import BlockType, create_half_block
 from trustchain.identity import Identity
-from trustchain.protocol import TrustChainProtocol
+from trustchain.protocol import MAX_DELEGATION_TTL_MS, TrustChainProtocol
 from trustchain.trust import TrustEngine
 
 
@@ -502,6 +502,25 @@ class TestDelegationProtocol:
         with pytest.raises(DelegationError, match="max_depth cannot exceed 2"):
             proto_op.create_delegation("bb" * 32, scope=[], max_depth=3)
 
+    def test_reject_ttl_exceeds_30_days(self, store, dstore, operator):
+        """TTL > 30 days must be rejected at the core protocol layer."""
+        proto_op = TrustChainProtocol(operator, store, dstore)
+        over_limit_seconds = (MAX_DELEGATION_TTL_MS / 1000) + 1  # 30 days + 1 second
+        with pytest.raises(DelegationError, match="exceeds maximum allowed"):
+            proto_op.create_delegation("bb" * 32, scope=[], ttl_seconds=over_limit_seconds)
+
+    def test_ttl_exactly_30_days_is_accepted(self, store, dstore, operator):
+        """TTL of exactly 30 days must be accepted (boundary condition)."""
+        proto_op = TrustChainProtocol(operator, store, dstore)
+        delegate = Identity()
+        exactly_30_days_seconds = MAX_DELEGATION_TTL_MS / 1000  # exactly 30 days
+        block = proto_op.create_delegation(
+            delegate.pubkey_hex, scope=[], ttl_seconds=exactly_30_days_seconds
+        )
+        assert block is not None
+        # expires_at - timestamp should equal MAX_DELEGATION_TTL_MS (allow 1 s clock skew)
+        assert block.transaction["expires_at"] - block.timestamp <= MAX_DELEGATION_TTL_MS + 1000
+
     def test_subdelegation_scope_subset(self, store, dstore):
         operator = Identity()
         orchestrator = Identity()
@@ -755,6 +774,23 @@ class TestAttackVectors:
 
         with pytest.raises(DelegationError, match="subset"):
             proto_orch.create_delegation(worker.pubkey_hex, scope=["search", "deploy"], max_depth=0)
+
+    def test_subdelegation_empty_scope_under_restricted_parent_rejected(self, store, dstore):
+        """Empty child scope is unrestricted (superset of any scope) — must be rejected when parent is restricted."""
+        op = Identity()
+        orch = Identity()
+        worker = Identity()
+
+        proto_op = TrustChainProtocol(op, store, dstore)
+        proto_orch = TrustChainProtocol(orch, store, dstore)
+
+        # Operator grants orchestrator a restricted scope
+        p = proto_op.create_delegation(orch.pubkey_hex, scope=["compute"], max_depth=1, ttl_seconds=3600)
+        proto_orch.accept_delegation(p)
+
+        # Orchestrator tries to sub-delegate with empty (unrestricted) scope — privilege escalation
+        with pytest.raises(DelegationError, match="unrestricted"):
+            proto_orch.create_delegation(worker.pubkey_hex, scope=[], max_depth=0)
 
     def test_zombie_delegation_expired(self, store, dstore):
         """Expired delegation should return 0 trust."""

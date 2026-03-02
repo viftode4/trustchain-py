@@ -42,6 +42,10 @@ from trustchain.identity import Identity
 
 logger = logging.getLogger("trustchain.protocol")
 
+# Maximum allowed TTL for a delegation: 30 days in milliseconds.
+# Enforced in the core protocol so it cannot be bypassed regardless of transport.
+MAX_DELEGATION_TTL_MS = 30 * 24 * 3600 * 1000  # 2_592_000_000 ms
+
 
 class TrustChainProtocol:
     """Two-phase proposal/agreement protocol engine.
@@ -392,6 +396,16 @@ class TrustChainProtocol:
         if max_depth > 2:
             raise DelegationError(self.pubkey, detail="max_depth cannot exceed 2")
 
+        ttl_ms = int(ttl_seconds * 1000)
+        if ttl_ms > MAX_DELEGATION_TTL_MS:
+            raise DelegationError(
+                self.pubkey,
+                detail=(
+                    f"TTL {ttl_ms} ms exceeds maximum allowed "
+                    f"{MAX_DELEGATION_TTL_MS} ms (30 days)"
+                ),
+            )
+
         now = _now_ms()
         delegation_id = hashlib.sha256(
             f"{self.pubkey}:{delegate_pubkey}:{now}".encode()
@@ -406,7 +420,14 @@ class TrustChainProtocol:
                         self.pubkey,
                         detail=f"Sub-delegation max_depth {max_depth} must be < parent's {my_delegation.max_depth}",
                     )
-                if my_delegation.scope and scope:
+                if my_delegation.scope:
+                    if not scope:
+                        # Empty scope = unrestricted, which is a superset of
+                        # the parent's restricted scope — this is escalation.
+                        raise DelegationError(
+                            self.pubkey,
+                            detail="Sub-delegation scope must not be unrestricted when parent scope is restricted",
+                        )
                     if not set(scope).issubset(set(my_delegation.scope)):
                         raise DelegationError(
                             self.pubkey,
@@ -425,7 +446,7 @@ class TrustChainProtocol:
             "outcome": "proposed",
             "scope": scope,
             "max_depth": max_depth,
-            "expires_at": now + int(ttl_seconds * 1000),
+            "expires_at": now + ttl_ms,
             "delegation_id": delegation_id,
         }
 
