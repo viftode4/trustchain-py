@@ -15,7 +15,10 @@ Or with full control::
 
 from __future__ import annotations
 
+import asyncio
 import atexit
+import functools
+import inspect
 import json
 import os
 import platform
@@ -60,6 +63,113 @@ def _generate_name() -> str:
     return f"{stem}-{os.getpid()}"
 
 
+_GITHUB_REPO = "viftode4/trustchain"
+
+
+def _platform_artifact() -> str:
+    """Map current platform to GitHub release artifact name."""
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+
+    # Normalize architecture
+    arch_map = {
+        "x86_64": "x64", "amd64": "x64",
+        "aarch64": "arm64", "arm64": "arm64",
+    }
+    arch = arch_map.get(machine)
+    if not arch:
+        raise RuntimeError(f"Unsupported architecture: {machine}")
+
+    if system == "linux":
+        return f"trustchain-node-linux-{arch}.tar.gz"
+    elif system == "darwin":
+        return f"trustchain-node-macos-{arch}.tar.gz"
+    elif system == "windows":
+        return f"trustchain-node-windows-{arch}.zip"
+    else:
+        raise RuntimeError(f"Unsupported platform: {system}")
+
+
+def _download_binary() -> str:
+    """Download the trustchain-node binary from GitHub Releases.
+
+    Returns the path to the downloaded binary.
+    """
+    artifact = _platform_artifact()
+    bin_dir = Path.home() / ".trustchain" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    dest = bin_dir / _binary_name()
+
+    # Fetch latest release info from GitHub API
+    api_url = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
+    print(f"[trustchain] Downloading binary for {platform.system()}-{platform.machine()}...")
+
+    try:
+        req = urllib.request.Request(
+            api_url,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "trustchain-py"},
+        )
+        resp = _direct_opener.open(req, timeout=15)
+        release = json.loads(resp.read().decode())
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Failed to fetch release info: {exc}") from exc
+
+    version = release.get("tag_name", "unknown")
+
+    # Find the matching asset
+    download_url = None
+    for asset in release.get("assets", []):
+        if asset["name"] == artifact:
+            download_url = asset["browser_download_url"]
+            break
+
+    if not download_url:
+        available = [a["name"] for a in release.get("assets", [])]
+        raise RuntimeError(
+            f"No release artifact '{artifact}' found in {version}.\n"
+            f"Available: {available}"
+        )
+
+    # Download the archive
+    import tempfile
+    try:
+        req = urllib.request.Request(download_url, headers={"User-Agent": "trustchain-py"})
+        resp = _direct_opener.open(req, timeout=120)
+        archive_data = resp.read()
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to download {download_url}: {exc}") from exc
+
+    # Extract the binary
+    import io
+    if artifact.endswith(".tar.gz"):
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(archive_data), mode="r:gz") as tf:
+            # Find the binary inside the archive
+            for member in tf.getmembers():
+                if member.name.endswith("trustchain-node") and member.isfile():
+                    with tf.extractfile(member) as f:  # type: ignore[union-attr]
+                        dest.write_bytes(f.read())
+                    break
+            else:
+                raise RuntimeError("trustchain-node not found in archive")
+    elif artifact.endswith(".zip"):
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(archive_data)) as zf:
+            for name in zf.namelist():
+                if name.endswith("trustchain-node.exe"):
+                    dest.write_bytes(zf.read(name))
+                    break
+            else:
+                raise RuntimeError("trustchain-node.exe not found in archive")
+
+    # Make executable on Unix
+    if not _is_windows():
+        dest.chmod(0o755)
+
+    print(f"[trustchain] Downloaded {version} → {dest}")
+    return str(dest)
+
+
 def _find_binary(explicit: str | None = None) -> str:
     """Locate the trustchain-node binary.
 
@@ -67,7 +177,7 @@ def _find_binary(explicit: str | None = None) -> str:
     1. Explicit path (if provided)
     2. PATH lookup
     3. ~/.trustchain/bin/
-    4. Auto-install via cargo (5 min timeout)
+    4. Auto-download from GitHub Releases
     """
     name = _binary_name()
 
@@ -88,31 +198,8 @@ def _find_binary(explicit: str | None = None) -> str:
     if home_bin.is_file():
         return str(home_bin)
 
-    # 4. Auto-install via cargo install
-    if shutil.which("cargo"):
-        print("[trustchain] Binary not found, installing via cargo (this may take a few minutes)...")
-        try:
-            subprocess.run(
-                ["cargo", "install", "trustchain-node"],
-                check=True,
-                timeout=300,
-            )
-        except FileNotFoundError:
-            pass  # cargo not installed — fall through to error
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError(f"Auto-install failed: {exc}") from exc
-        else:
-            found = shutil.which("trustchain-node")
-            if found:
-                return found
-
-    raise RuntimeError(
-        "Could not find trustchain-node binary. Install options:\n"
-        "  1. cargo install trustchain-node\n"
-        "  2. Add trustchain-node to PATH\n"
-        "  3. Place binary at ~/.trustchain/bin/trustchain-node\n"
-        "  4. Download from https://github.com/levvlad/trustchain/releases"
-    )
+    # 4. Auto-download from GitHub Releases
+    return _download_binary()
 
 
 def _find_free_port_base(count: int = 4) -> int:
@@ -680,3 +767,82 @@ def init_delegate(
         sidecar.accept_delegation(proposal_block)
 
     return sidecar
+
+
+def download_binary() -> str:
+    """Explicitly download the trustchain-node binary.
+
+    Useful for Docker images, CI, or pre-provisioning environments.
+    Returns the path to the downloaded binary.
+    """
+    return _download_binary()
+
+
+def with_trust(
+    fn: Any = None,
+    *,
+    name: str | None = None,
+    bootstrap: str | list[str] | None = None,
+    log_level: str = "info",
+    binary: str | None = None,
+) -> Any:
+    """Decorator that wraps a function with TrustChain sidecar lifecycle.
+
+    Starts the sidecar before the function runs and sets ``HTTP_PROXY``
+    so all outbound HTTP calls are trust-protected. Cleanup is handled
+    automatically via ``atexit``.
+
+    Can be used with or without arguments::
+
+        @with_trust
+        def main():
+            ...
+
+        @with_trust(name="my-agent")
+        def main():
+            ...
+
+        @with_trust(name="async-agent")
+        async def main():
+            ...
+    """
+
+    def decorator(func: Any) -> Any:
+        @functools.wraps(func)
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            sidecar = init(
+                name=name, bootstrap=bootstrap,
+                log_level=log_level, binary=binary,
+            )
+            _print_banner(sidecar)
+            return func(*args, **kwargs)
+
+        @functools.wraps(func)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            sidecar = init(
+                name=name, bootstrap=bootstrap,
+                log_level=log_level, binary=binary,
+            )
+            _print_banner(sidecar)
+            return await func(*args, **kwargs)
+
+        if inspect.iscoroutinefunction(func):
+            return async_wrapper
+        return sync_wrapper
+
+    # Support both @with_trust and @with_trust(name="x")
+    if fn is not None:
+        return decorator(fn)
+    return decorator
+
+
+def _print_banner(sidecar: TrustChainSidecar) -> None:
+    """Print a startup banner with sidecar info."""
+    pk = sidecar.pubkey or "pending..."
+    print(
+        f"[trustchain] Sidecar ready\n"
+        f"  pubkey:    {pk}\n"
+        f"  http:      {sidecar.http_url}\n"
+        f"  proxy:     {sidecar.proxy_url}\n"
+        f"  dashboard: {sidecar.http_url}/dashboard"
+    )

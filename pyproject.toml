@@ -34,11 +34,17 @@ dependencies = [
 quic = ["aioquic>=1.2"]
 grpc = ["grpcio>=1.68", "protobuf>=5.29"]
 node = ["hypercorn>=0.17"]
+langchain = ["langchain-core>=0.3"]
+mcp = ["fastmcp>=3.0"]
+crewai = ["crewai>=0.80"]
 all = [
     "aioquic>=1.2",
     "grpcio>=1.68",
     "protobuf>=5.29",
     "hypercorn>=0.17",
+    "langchain-core>=0.3",
+    "fastmcp>=3.0",
+    "crewai>=0.80",
 ]
 dev = [
     "pytest>=8.0",
@@ -49,6 +55,9 @@ dev = [
     "hypercorn>=0.17",
 ]
 bench = ["pytest-benchmark>=4.0", "pytest>=8.0"]
+
+[project.scripts]
+trustchain = "trustchain.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/viftode4/trustchain-py"

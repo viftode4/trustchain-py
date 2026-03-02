@@ -86,4 +86,10 @@ from trustchain.exceptions import (
 )
 
 # === Sidecar SDK (zero-config) ===
-from trustchain.sidecar import init, init_delegate, protect, TrustChainSidecar
+from trustchain.sidecar import (
+    init, init_delegate, protect, TrustChainSidecar,
+    with_trust, download_binary,
+)
+
+# === Trust tools (framework-agnostic) ===
+from trustchain.tools import trust_tools
