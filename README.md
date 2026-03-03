@@ -140,6 +140,10 @@ pip install -e ".[dev]"
 python -m pytest tests/ -v   # 311 tests
 ```
 
+## Protocol
+
+Implements [draft-pouwelse-trustchain-01](https://datatracker.ietf.org/doc/draft-pouwelse-trustchain/) (Pouwelse, TU Delft, 2018) — the base bilateral ledger protocol. Trust computation, NetFlow Sybil resistance, delegation, and succession are specified in draft-viftode-trustchain-trust-00 (filed March 2026). Rust is the authoritative implementation; Python stays wire-compatible.
+
 ## Related Projects
 
 - [trustchain](https://github.com/viftode4/trustchain) — Rust core: sidecar binary, QUIC P2P, MCP server, dashboard
