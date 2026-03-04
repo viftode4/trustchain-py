@@ -153,7 +153,7 @@ Implements [draft-pouwelse-trustchain-01](https://datatracker.ietf.org/doc/draft
 ## Related Projects
 
 - [trustchain](https://github.com/viftode4/trustchain) — Rust core: sidecar binary, QUIC P2P, MCP server, dashboard
-- [trustchain-js](https://github.com/viftode4/trustchain-js) — TypeScript SDK
+- [trustchain-js](https://github.com/viftode4/trustchain-js) — TypeScript SDK: `npm install @trustchain/sdk`
 - [trustchain-agent-os](https://github.com/viftode4/trustchain-agent-os) — Agent framework adapters (12 frameworks)
 
 ## License
