@@ -36,6 +36,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+# Early-access public seed node. Not production-scale yet — will be
+# replaced with a domain and additional nodes as the network grows.
+DEFAULT_SEED_NODES: list[str] = ["http://5.161.255.238:8202"]
+
 # Global singleton
 _instance: TrustChainSidecar | None = None
 _lock = threading.Lock()
@@ -264,9 +268,9 @@ class TrustChainSidecar:
         self._stopped = False
         self._prev_http_proxy: str | None = None
 
-        # Normalize bootstrap to list
+        # Normalize bootstrap to list; default to public seed node
         if bootstrap is None:
-            self._bootstrap: list[str] = []
+            self._bootstrap: list[str] = list(DEFAULT_SEED_NODES)
         elif isinstance(bootstrap, str):
             self._bootstrap = [b.strip() for b in bootstrap.split(",") if b.strip()]
         else:

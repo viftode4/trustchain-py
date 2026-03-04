@@ -140,6 +140,12 @@ pip install -e ".[dev]"
 python -m pytest tests/ -v   # 311 tests
 ```
 
+## Public Seed Node
+
+A public seed node is running at `http://5.161.255.238:8202`. It is the default bootstrap peer — agents connect automatically without any configuration.
+
+> Early-access: not production-scale yet. Will be replaced with a domain and additional nodes as the network grows.
+
 ## Protocol
 
 Implements [draft-pouwelse-trustchain-01](https://datatracker.ietf.org/doc/draft-pouwelse-trustchain/) (Pouwelse, TU Delft, 2018) — the base bilateral ledger protocol. Trust computation, NetFlow Sybil resistance, delegation, and succession are specified in draft-viftode-trustchain-trust-00 (filed March 2026). Rust is the authoritative implementation; Python stays wire-compatible.
