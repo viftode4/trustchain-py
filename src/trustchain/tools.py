@@ -24,13 +24,15 @@ def _get_sidecar() -> Any:
     return init()
 
 
-def check_trust(pubkey: str) -> float:
+def check_trust(pubkey: str) -> dict[str, Any]:
     """Check the trust score for a peer by public key.
 
-    Returns a float between 0.0 (no trust) and 1.0 (full trust).
+    Returns a dict with trust_score plus evidence (connectivity, integrity,
+    diversity, unique_peers, interactions, fraud, path_diversity).
+    Falls back to {"trust_score": <float>} if the sidecar returns a plain number.
     """
     sidecar = _get_sidecar()
-    return sidecar.trust_score(pubkey)
+    return sidecar.trust_score_with_evidence(pubkey)
 
 
 def discover_peers(
@@ -93,7 +95,8 @@ def trust_tools() -> list[dict[str, Any]]:
             "name": "check_trust",
             "description": (
                 "Check the trust score for a peer by their public key. "
-                "Returns a float between 0.0 (no trust) and 1.0 (full trust)."
+                "Returns an evidence bundle with trust_score, connectivity, "
+                "integrity, diversity, unique_peers, interactions, and fraud."
             ),
             "parameters": {
                 "type": "object",

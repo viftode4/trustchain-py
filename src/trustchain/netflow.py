@@ -94,7 +94,7 @@ class NetFlowTrust:
                         continue
                     if source not in graph:
                         graph[source] = {}
-                    graph[source][target] = graph.get(source, {}).get(target, 0.0) + 0.5
+                    graph[source][target] = min(graph.get(source, {}).get(target, 0.0) + 0.5, 1.0)
                 self._known_seqs[pubkey] = current_seq
             self._last_block_count = current_count
         return self._cached_graph
@@ -139,7 +139,7 @@ class NetFlowTrust:
                     continue  # Skip self-loops (including same-operator delegates)
                 # Each half-block represents a contribution of 0.5
                 # (proposal + agreement = 1.0 total per transaction)
-                graph[source][target] += 0.5
+                graph[source][target] = min(graph[source][target] + 0.5, 1.0)
 
         return {k: dict(v) for k, v in graph.items()}
 
@@ -241,17 +241,19 @@ class NetFlowTrust:
 
         return augmented, super_source, max_possible
 
-    def compute_trust(self, target_pubkey: str) -> float:
-        """Compute trust score for a target agent via max-flow from seeds.
+    def compute_path_diversity(self, target_pubkey: str) -> float:
+        """Compute raw path diversity (max-flow) for a target agent.
 
-        The score is the sum of max-flow from each seed node to the target,
-        normalized to [0.0, 1.0].
+        Returns the raw max-flow value (not normalized):
+        - Seed nodes return float('inf')
+        - Unknown/disconnected nodes return 0.0
+        - Others get the raw max-flow from super-source
 
-        Agents in Sybil clusters have no real contributions to honest nodes,
-        so their max-flow from any seed is ~0.
+        Edge weights are capped at 1.0 per peer pair, so max-flow measures
+        the number of independent paths (topology), not interaction volume.
         """
         if target_pubkey in self.seeds:
-            return 1.0
+            return float("inf")
 
         graph = self._get_or_build_graph()
         if not graph:
@@ -262,14 +264,20 @@ class NetFlowTrust:
         if max_possible <= 0:
             return 0.0
 
-        raw_flow = self._max_flow(augmented, super_source, target_pubkey)
+        return self._max_flow(augmented, super_source, target_pubkey)
 
-        return min(raw_flow / max_possible, 1.0)
+    def compute_trust(self, target_pubkey: str) -> float:
+        """Backward-compatible wrapper: returns compute_path_diversity result.
 
-    def compute_all_scores(self) -> Dict[str, float]:
-        """Batch computation of trust scores for all known agents.
+        .. deprecated:: 2.3
+            Use ``compute_path_diversity()`` instead.
+        """
+        return self.compute_path_diversity(target_pubkey)
 
-        Builds the graph once and reuses it for efficiency.
+    def compute_all_path_diversities(self) -> Dict[str, float]:
+        """Batch computation of raw path diversity for all known agents.
+
+        Seeds return float('inf'). Builds the graph once and reuses it.
         """
         all_pubkeys = self.store.get_all_pubkeys()
         if not all_pubkeys:
@@ -277,19 +285,26 @@ class NetFlowTrust:
 
         graph = self._get_or_build_graph()
         if not graph:
-            return {pk: (1.0 if pk in self.seeds else 0.0) for pk in all_pubkeys}
+            return {pk: (float("inf") if pk in self.seeds else 0.0) for pk in all_pubkeys}
 
         augmented, super_source, max_possible = self._prepare_graph_with_super_source(graph)
 
         scores: Dict[str, float] = {}
         for pk in all_pubkeys:
             if pk in self.seeds:
-                scores[pk] = 1.0
+                scores[pk] = float("inf")
             elif max_possible <= 0:
                 scores[pk] = 0.0
             else:
-                # Each max-flow call needs a fresh graph since _max_flow modifies residual
                 raw_flow = self._max_flow(augmented, super_source, pk)
-                scores[pk] = min(raw_flow / max_possible, 1.0)
+                scores[pk] = raw_flow
 
         return scores
+
+    def compute_all_scores(self) -> Dict[str, float]:
+        """Backward-compatible wrapper.
+
+        .. deprecated:: 2.3
+            Use ``compute_all_path_diversities()`` instead.
+        """
+        return self.compute_all_path_diversities()

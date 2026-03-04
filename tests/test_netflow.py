@@ -60,12 +60,13 @@ class TestNetFlowTrust:
     def test_seed_node_self_trust(self, identity_a):
         store = MemoryBlockStore()
         netflow = NetFlowTrust(store, [identity_a.pubkey_hex])
-        assert netflow.compute_trust(identity_a.pubkey_hex) == 1.0
+        score = netflow.compute_path_diversity(identity_a.pubkey_hex)
+        assert score == float("inf")  # Seeds return infinity
 
     def test_unknown_agent_zero_trust(self, identity_a, identity_b):
         store = MemoryBlockStore()
         netflow = NetFlowTrust(store, [identity_a.pubkey_hex])
-        assert netflow.compute_trust(identity_b.pubkey_hex) == 0.0
+        assert netflow.compute_path_diversity(identity_b.pubkey_hex) == 0.0
 
     def test_connected_agent_gets_trust(self, identity_a, identity_b):
         store = MemoryBlockStore()
@@ -74,11 +75,11 @@ class TestNetFlowTrust:
         )
 
         netflow = NetFlowTrust(store, [identity_a.pubkey_hex])
-        trust = netflow.compute_trust(identity_b.pubkey_hex)
-        assert trust > 0.0
+        path_div = netflow.compute_path_diversity(identity_b.pubkey_hex)
+        assert path_div > 0.0
 
     def test_transitive_trust(self, identity_a, identity_b, identity_c):
-        """A -> B -> C: C should get some trust from seed A."""
+        """A -> B -> C: C should get some path diversity from seed A."""
         store = MemoryBlockStore()
 
         p_ab, a_ab = _create_transaction_pair(
@@ -91,14 +92,14 @@ class TestNetFlowTrust:
         )
 
         netflow = NetFlowTrust(store, [identity_a.pubkey_hex])
-        trust_b = netflow.compute_trust(identity_b.pubkey_hex)
-        trust_c = netflow.compute_trust(identity_c.pubkey_hex)
+        pd_b = netflow.compute_path_diversity(identity_b.pubkey_hex)
+        pd_c = netflow.compute_path_diversity(identity_c.pubkey_hex)
 
-        assert trust_b > 0.0
-        assert trust_c > 0.0
+        assert pd_b > 0.0
+        assert pd_c > 0.0
 
     def test_sybil_cluster_low_trust(self, identity_a, identity_b, identity_c):
-        """Sybil cluster (B<->C with no connection to seed A) gets near-zero trust."""
+        """Sybil cluster (B<->C with no connection to seed A) gets zero path diversity."""
         store = MemoryBlockStore()
 
         # B and C interact only with each other
@@ -108,24 +109,24 @@ class TestNetFlowTrust:
 
         # A is seed but has no interactions
         netflow = NetFlowTrust(store, [identity_a.pubkey_hex])
-        trust_b = netflow.compute_trust(identity_b.pubkey_hex)
-        trust_c = netflow.compute_trust(identity_c.pubkey_hex)
+        pd_b = netflow.compute_path_diversity(identity_b.pubkey_hex)
+        pd_c = netflow.compute_path_diversity(identity_c.pubkey_hex)
 
-        assert trust_b == 0.0
-        assert trust_c == 0.0
+        assert pd_b == 0.0
+        assert pd_c == 0.0
 
-    def test_compute_all_scores(self, identity_a, identity_b):
+    def test_compute_all_path_diversities(self, identity_a, identity_b):
         store = MemoryBlockStore()
         _create_transaction_pair(
             store, identity_a, identity_b, 1, 1, GENESIS_HASH, GENESIS_HASH
         )
 
         netflow = NetFlowTrust(store, [identity_a.pubkey_hex])
-        scores = netflow.compute_all_scores()
+        scores = netflow.compute_all_path_diversities()
 
         assert identity_a.pubkey_hex in scores
         assert identity_b.pubkey_hex in scores
-        assert scores[identity_a.pubkey_hex] == 1.0
+        assert scores[identity_a.pubkey_hex] == float("inf")  # Seed
         assert scores[identity_b.pubkey_hex] > 0.0
 
     def test_build_contribution_graph(self, identity_a, identity_b):
@@ -143,34 +144,33 @@ class TestNetFlowTrust:
 
 class TestMultipleSeeds:
     def test_multiple_seed_nodes(self, identity_a, identity_b, identity_c):
-        """Multiple seeds should all have trust=1.0."""
+        """Multiple seeds should all have infinite path diversity."""
         store = MemoryBlockStore()
         _create_transaction_pair(
             store, identity_a, identity_b, 1, 1, GENESIS_HASH, GENESIS_HASH
         )
 
         netflow = NetFlowTrust(store, [identity_a.pubkey_hex, identity_b.pubkey_hex])
-        assert netflow.compute_trust(identity_a.pubkey_hex) == 1.0
-        assert netflow.compute_trust(identity_b.pubkey_hex) == 1.0
+        assert netflow.compute_path_diversity(identity_a.pubkey_hex) == float("inf")
+        assert netflow.compute_path_diversity(identity_b.pubkey_hex) == float("inf")
 
-    def test_compute_all_scores_uses_batch(self, identity_a, identity_b):
-        """compute_all_scores should return scores for all known agents."""
+    def test_compute_all_path_diversities_uses_batch(self, identity_a, identity_b):
+        """compute_all_path_diversities should return scores for all known agents."""
         store = MemoryBlockStore()
         _create_transaction_pair(
             store, identity_a, identity_b, 1, 1, GENESIS_HASH, GENESIS_HASH
         )
 
         netflow = NetFlowTrust(store, [identity_a.pubkey_hex])
-        scores = netflow.compute_all_scores()
+        scores = netflow.compute_all_path_diversities()
 
         assert len(scores) >= 2
-        assert all(0.0 <= s <= 1.0 for s in scores.values())
-        assert scores[identity_a.pubkey_hex] == 1.0
+        assert scores[identity_a.pubkey_hex] == float("inf")  # Seed
         assert scores[identity_b.pubkey_hex] > 0.0
 
-class TestNormalizationBounds:
-    def test_all_scores_within_bounds(self, identity_a, identity_b, identity_c):
-        """All trust scores should be in [0.0, 1.0]."""
+class TestPathDiversityBounds:
+    def test_non_negative_path_diversity(self, identity_a, identity_b, identity_c):
+        """All path diversities should be >= 0."""
         store = MemoryBlockStore()
         p1, a1 = _create_transaction_pair(
             store, identity_a, identity_b, 1, 1, GENESIS_HASH, GENESIS_HASH
@@ -181,11 +181,11 @@ class TestNormalizationBounds:
 
         netflow = NetFlowTrust(store, [identity_a.pubkey_hex])
         for pk in store.get_all_pubkeys():
-            score = netflow.compute_trust(pk)
-            assert 0.0 <= score <= 1.0, f"Score {score} out of bounds for {pk[:16]}"
+            score = netflow.compute_path_diversity(pk)
+            assert score >= 0.0, f"Score {score} is negative for {pk[:16]}"
 
-    def test_transitive_trust_ordering(self, identity_a, identity_b, identity_c):
-        """Closer to seed should have >= trust than further."""
+    def test_transitive_path_diversity_ordering(self, identity_a, identity_b, identity_c):
+        """Closer to seed should have >= path diversity than further."""
         store = MemoryBlockStore()
         p1, a1 = _create_transaction_pair(
             store, identity_a, identity_b, 1, 1, GENESIS_HASH, GENESIS_HASH
@@ -195,9 +195,9 @@ class TestNormalizationBounds:
         )
 
         netflow = NetFlowTrust(store, [identity_a.pubkey_hex])
-        trust_b = netflow.compute_trust(identity_b.pubkey_hex)
-        trust_c = netflow.compute_trust(identity_c.pubkey_hex)
-        assert trust_b >= trust_c
+        pd_b = netflow.compute_path_diversity(identity_b.pubkey_hex)
+        pd_c = netflow.compute_path_diversity(identity_c.pubkey_hex)
+        assert pd_b >= pd_c
 
     def test_incremental_cache_update(self, identity_a, identity_b, identity_c):
         """Incremental update adds new edges without full rebuild."""
@@ -207,7 +207,7 @@ class TestNormalizationBounds:
         # First interaction.
         p1, a1 = _create_transaction_pair(store, identity_a, identity_b, 1, 1, GENESIS_HASH, GENESIS_HASH)
 
-        score1 = nf.compute_trust(identity_b.pubkey_hex)
+        score1 = nf.compute_path_diversity(identity_b.pubkey_hex)
         assert score1 > 0.0
         assert nf._known_seqs.get(identity_a.pubkey_hex) == 1
         assert nf._known_seqs.get(identity_b.pubkey_hex) == 1
@@ -218,7 +218,7 @@ class TestNormalizationBounds:
             p1.block_hash, GENESIS_HASH,
         )
 
-        score_c = nf.compute_trust(identity_c.pubkey_hex)
+        score_c = nf.compute_path_diversity(identity_c.pubkey_hex)
         assert score_c > 0.0
         # Verify known_seqs updated.
         assert nf._known_seqs.get(identity_a.pubkey_hex) == 2
@@ -231,20 +231,20 @@ class TestNormalizationBounds:
 
         # First interaction — triggers full build.
         p1, a1 = _create_transaction_pair(store, identity_a, identity_b, 1, 1, GENESIS_HASH, GENESIS_HASH)
-        nf_incremental.compute_trust(identity_b.pubkey_hex)
+        nf_incremental.compute_path_diversity(identity_b.pubkey_hex)
 
         # Second interaction — triggers incremental.
         p2, a2 = _create_transaction_pair(
             store, identity_a, identity_c, 2, 1,
             p1.block_hash, GENESIS_HASH,
         )
-        score_b_inc = nf_incremental.compute_trust(identity_b.pubkey_hex)
-        score_c_inc = nf_incremental.compute_trust(identity_c.pubkey_hex)
+        score_b_inc = nf_incremental.compute_path_diversity(identity_b.pubkey_hex)
+        score_c_inc = nf_incremental.compute_path_diversity(identity_c.pubkey_hex)
 
         # Fresh full rebuild for comparison.
         nf_full = NetFlowTrust(store, [identity_a.pubkey_hex])
-        score_b_full = nf_full.compute_trust(identity_b.pubkey_hex)
-        score_c_full = nf_full.compute_trust(identity_c.pubkey_hex)
+        score_b_full = nf_full.compute_path_diversity(identity_b.pubkey_hex)
+        score_c_full = nf_full.compute_path_diversity(identity_c.pubkey_hex)
 
         assert abs(score_b_inc - score_b_full) < 1e-9
         assert abs(score_c_inc - score_c_full) < 1e-9

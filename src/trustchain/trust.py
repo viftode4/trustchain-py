@@ -27,29 +27,31 @@ logger = logging.getLogger("trustchain.trust")
 # ===========================================================================
 
 
+DEFAULT_CONNECTIVITY_THRESHOLD = 3.0
+DEFAULT_DIVERSITY_THRESHOLD = 5.0
+
+
 class TrustEngine:
-    """Unified trust computation combining chain integrity and NetFlow.
+    """Unified trust computation: Trust = connectivity × integrity × diversity.
 
-    Weights:
-    - Chain integrity (0.5) — broken chain = major penalty
-    - NetFlow score (0.5) — Sybil resistance via max-flow
+    - connectivity = min(path_diversity / K, 1.0) — Sybil resistance
+    - integrity = chain_integrity — hash linkage, signatures
+    - diversity = min(unique_peers / M, 1.0) — interaction partner spread
     """
-
-    DEFAULT_WEIGHTS = {
-        "integrity": 0.5,
-        "netflow": 0.5,
-    }
 
     def __init__(
         self,
         store: BlockStore,
         seed_nodes: Optional[List[str]] = None,
-        weights: Optional[Dict[str, float]] = None,
+        weights: Optional[Dict[str, float]] = None,  # backward compat, ignored
         delegation_store: Optional[DelegationStore] = None,
         checkpoint=None,
+        connectivity_threshold: float = DEFAULT_CONNECTIVITY_THRESHOLD,
+        diversity_threshold: float = DEFAULT_DIVERSITY_THRESHOLD,
     ) -> None:
         self.store = store
-        self.weights = weights or self.DEFAULT_WEIGHTS.copy()
+        self.connectivity_threshold = connectivity_threshold
+        self.diversity_threshold = diversity_threshold
         self._protocol = TrustChainProtocol(
             # Dummy identity — protocol is used only for validation
             identity=None,  # type: ignore[arg-type]
@@ -58,6 +60,7 @@ class TrustEngine:
         self.delegation_store = delegation_store
         self.checkpoint = checkpoint
         self.netflow: Optional[NetFlowTrust] = None
+        self.seed_nodes = seed_nodes or []
         if seed_nodes:
             self.netflow = NetFlowTrust(
                 store, seed_nodes, delegation_store=delegation_store
@@ -93,31 +96,110 @@ class TrustEngine:
         return self._compute_standard_trust(pubkey)
 
     def _compute_standard_trust(self, pubkey: str) -> float:
-        """Standard trust computation for persistent identities."""
-        # Check for fraud by ANY delegate (active OR revoked) — fraud propagation upward.
-        # Revoking a delegation does NOT erase the fraud penalty (IETF §5).
+        """Standard trust computation: connectivity × integrity × diversity."""
+        evidence = self._compute_standard_trust_evidence(pubkey)
+        return evidence["trust_score"]
+
+    def _compute_standard_trust_evidence(self, pubkey: str) -> dict:
+        """Compute trust with full evidence for the standard (non-delegated) path."""
+        chain = self.store.get_chain(pubkey)
+        unique_peers = self._count_unique_peers(chain)
+        interactions = len(chain)
+
+        # Check for fraud by ANY delegate (active OR revoked).
         if self.delegation_store is not None:
             delegations = self.delegation_store.get_delegations_by_delegator(pubkey)
             for d in delegations:
                 delegate_chain = self.store.get_chain(d.delegate_pubkey)
                 if self._has_double_spend(delegate_chain):
-                    return 0.0  # Hard zero: delegate fraud = delegator fraud
+                    return {
+                        "trust_score": 0.0, "connectivity": 0.0,
+                        "integrity": 0.0, "diversity": 0.0,
+                        "unique_peers": unique_peers, "interactions": interactions,
+                        "fraud": True, "path_diversity": 0.0,
+                    }
 
         integrity = self.compute_chain_integrity(pubkey)
 
         if self.netflow:
-            netflow_score = self.compute_netflow_score(pubkey)
-            # Sybil gate: if NetFlow is zero (no path from seeds), trust is zero.
-            if netflow_score < 1e-10:
-                return 0.0
-            score = (
-                self.weights["integrity"] * integrity
-                + self.weights["netflow"] * netflow_score
-            )
-            return min(max(score, 0.0), 1.0)
+            # Seed nodes get trust = 1.0
+            if pubkey in self.seed_nodes:
+                return {
+                    "trust_score": 1.0, "connectivity": 1.0,
+                    "integrity": 1.0, "diversity": 1.0,
+                    "unique_peers": unique_peers, "interactions": interactions,
+                    "fraud": False, "path_diversity": float("inf"),
+                }
 
-        # No seeds configured — return integrity only.
-        return integrity
+            path_div = self.netflow.compute_path_diversity(pubkey)
+            diversity = min(unique_peers / self.diversity_threshold, 1.0)
+
+            # Sybil gate: if no path from seeds, trust is zero.
+            if path_div < 1e-10:
+                return {
+                    "trust_score": 0.0, "connectivity": 0.0,
+                    "integrity": integrity, "diversity": diversity,
+                    "unique_peers": unique_peers, "interactions": interactions,
+                    "fraud": False, "path_diversity": path_div,
+                }
+
+            connectivity = min(path_div / self.connectivity_threshold, 1.0)
+            trust_score = min(max(connectivity * integrity * diversity, 0.0), 1.0)
+
+            return {
+                "trust_score": trust_score, "connectivity": connectivity,
+                "integrity": integrity, "diversity": diversity,
+                "unique_peers": unique_peers, "interactions": interactions,
+                "fraud": False, "path_diversity": path_div,
+            }
+
+        # No seeds configured — no Sybil resistance, use integrity only.
+        return {
+            "trust_score": integrity, "connectivity": 1.0,
+            "integrity": integrity, "diversity": 1.0,
+            "unique_peers": unique_peers, "interactions": interactions,
+            "fraud": False, "path_diversity": 0.0,
+        }
+
+    def _count_unique_peers(self, chain) -> int:
+        """Count distinct link_public_keys in a chain."""
+        peers: Set[str] = set()
+        for block in chain:
+            if block.public_key != block.link_public_key:
+                peers.add(block.link_public_key)
+        return len(peers)
+
+    def compute_trust_with_evidence(
+        self, pubkey: str, interaction_type: Optional[str] = None
+    ) -> dict:
+        """Compute trust with full evidence bundle (delegation-aware)."""
+        if self.delegation_store is not None:
+            delegation = self.delegation_store.get_delegation_by_delegate(pubkey)
+            if delegation is not None:
+                if not delegation.is_active:
+                    return {
+                        "trust_score": 0.0, "connectivity": 0.0,
+                        "integrity": 0.0, "diversity": 0.0,
+                        "unique_peers": 0, "interactions": 0,
+                        "fraud": False, "path_diversity": 0.0,
+                    }
+                root_pubkey = self._resolve_root(delegation)
+                root_evidence = self._compute_standard_trust_evidence(root_pubkey)
+                active_count = max(
+                    self.delegation_store.get_active_delegation_count(root_pubkey), 1
+                )
+                effective = min(max(root_evidence["trust_score"] / active_count, 0.0), 1.0)
+                return {**root_evidence, "trust_score": effective}
+
+            if self.delegation_store.is_delegate(pubkey):
+                return {
+                    "trust_score": 0.0, "connectivity": 0.0,
+                    "integrity": 0.0, "diversity": 0.0,
+                    "unique_peers": 0, "interactions": 0,
+                    "fraud": False, "path_diversity": 0.0,
+                }
+
+        return self._compute_standard_trust_evidence(pubkey)
 
     def _compute_delegated_trust(
         self, delegation: DelegationRecord, interaction_type: Optional[str] = None
@@ -222,10 +304,14 @@ class TrustEngine:
         return valid_count / len(chain)
 
     def compute_netflow_score(self, pubkey: str) -> float:
-        """NetFlow score alone [0.0, 1.0]."""
+        """Raw path diversity score (not normalized).
+
+        .. deprecated:: 2.3
+            Use ``compute_trust_with_evidence()`` for the full breakdown.
+        """
         if not self.netflow:
             return 0.0
-        return self.netflow.compute_trust(pubkey)
+        return self.netflow.compute_path_diversity(pubkey)
 
 
 # ===========================================================================

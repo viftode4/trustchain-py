@@ -535,6 +535,18 @@ class TrustChainSidecar:
             return float(data)
         return float(data.get("trust_score", data.get("score", 0.0)))
 
+    def trust_score_with_evidence(self, pubkey: str) -> dict[str, Any]:
+        """GET /trust/{pubkey} — compute trust score with full evidence bundle.
+
+        Returns dict with: trust_score, connectivity, integrity, diversity,
+        unique_peers, interactions, fraud, path_diversity, block_count,
+        interaction_count.
+        """
+        data = self._get(f"/trust/{pubkey}")
+        if isinstance(data, (int, float)):
+            return {"trust_score": float(data)}
+        return data
+
     def discover(
         self,
         capability: str,
