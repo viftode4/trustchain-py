@@ -75,11 +75,12 @@ class TrustEngine:
         returns delegated trust (budget-split from the root identity's trust).
         Otherwise, returns the standard trust computation.
 
-        Components (standard path):
-        - Chain integrity (weight: 0.5) — broken chain = major penalty
-        - NetFlow score (weight: 0.5) — Sybil resistance
+        Components (standard path, multiplicative):
+        - Connectivity = min(path_diversity / K, 1.0) — Sybil resistance
+        - Integrity = chain validity fraction — broken chain = major penalty
+        - Diversity = min(unique_peers / M, 1.0) — interaction partner spread
 
-        If NetFlow is not configured (no seed nodes), returns integrity only.
+        If no seed nodes configured, returns integrity only.
         """
         # Check if this is a delegated identity
         if self.delegation_store is not None:
