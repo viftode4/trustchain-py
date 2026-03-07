@@ -29,14 +29,16 @@ logger = logging.getLogger("trustchain.trust")
 
 DEFAULT_CONNECTIVITY_THRESHOLD = 3.0
 DEFAULT_DIVERSITY_THRESHOLD = 5.0
+DEFAULT_RECENCY_LAMBDA = 0.95
 
 
 class TrustEngine:
-    """Unified trust computation: Trust = connectivity × integrity × diversity.
+    """Unified trust computation: Trust = connectivity × integrity × diversity × recency.
 
     - connectivity = min(path_diversity / K, 1.0) — Sybil resistance
     - integrity = chain_integrity — hash linkage, signatures
     - diversity = min(unique_peers / M, 1.0) — interaction partner spread
+    - recency = exponential-decay-weighted outcome quality
     """
 
     def __init__(
@@ -48,10 +50,16 @@ class TrustEngine:
         checkpoint=None,
         connectivity_threshold: float = DEFAULT_CONNECTIVITY_THRESHOLD,
         diversity_threshold: float = DEFAULT_DIVERSITY_THRESHOLD,
+        recency_lambda: float = DEFAULT_RECENCY_LAMBDA,
+        cold_start_threshold: int = 5,
+        delegation_factor: float = 0.8,
     ) -> None:
         self.store = store
         self.connectivity_threshold = connectivity_threshold
         self.diversity_threshold = diversity_threshold
+        self.recency_lambda = recency_lambda
+        self.cold_start_threshold = cold_start_threshold
+        self.delegation_factor = delegation_factor
         self._protocol = TrustChainProtocol(
             # Dummy identity — protocol is used only for validation
             identity=None,  # type: ignore[arg-type]
@@ -72,40 +80,90 @@ class TrustEngine:
         """Combined trust score [0.0, 1.0].
 
         If pubkey is a delegated identity and a DelegationStore is configured,
-        returns delegated trust (budget-split from the root identity's trust).
+        uses cold start blending between delegation trust and direct trust.
         Otherwise, returns the standard trust computation.
 
         Components (standard path, multiplicative):
         - Connectivity = min(path_diversity / K, 1.0) — Sybil resistance
         - Integrity = chain validity fraction — broken chain = major penalty
         - Diversity = min(unique_peers / M, 1.0) — interaction partner spread
+        - Recency = exponential-decay-weighted outcome quality
 
-        If no seed nodes configured, returns integrity only.
+        If no seed nodes configured, returns integrity × recency.
         """
         # Check if this is a delegated identity
         if self.delegation_store is not None:
             # Check active delegation first
             delegation = self.delegation_store.get_delegation_by_delegate(pubkey)
             if delegation is not None:
-                return self._compute_delegated_trust(delegation, interaction_type)
+                return self._compute_delegated_trust(
+                    pubkey, delegation, interaction_type
+                )
 
             # Check if this was a delegate whose delegation was revoked
-            # Revoked delegates get 0 trust — they lost their authority
             if self.delegation_store.is_delegate(pubkey):
                 return 0.0
 
-        return self._compute_standard_trust(pubkey)
+        return self._compute_standard_trust(pubkey, interaction_type)
 
-    def _compute_standard_trust(self, pubkey: str) -> float:
-        """Standard trust computation: connectivity × integrity × diversity."""
-        evidence = self._compute_standard_trust_evidence(pubkey)
+    def _compute_standard_trust(
+        self, pubkey: str, context: Optional[str] = None
+    ) -> float:
+        """Standard trust computation: connectivity × integrity × diversity × recency."""
+        evidence = self._compute_standard_trust_evidence(pubkey, context)
         return evidence["trust_score"]
 
-    def _compute_standard_trust_evidence(self, pubkey: str) -> dict:
+    def _get_chain_for_context(
+        self, pubkey: str, context: Optional[str] = None
+    ) -> list:
+        """Get the chain filtered by context (interaction_type), or full chain."""
+        chain = self.store.get_chain(pubkey)
+        if context is None:
+            return chain
+        return [
+            b for b in chain
+            if (
+                getattr(b, "transaction", {}).get("interaction_type", "") == context
+                or getattr(b, "transaction", {})
+                .get("interaction_type", "")
+                .startswith(f"{context}:")
+            )
+        ]
+
+    def _compute_recency(self, chain) -> float:
+        """Compute recency: exponential-decay-weighted outcome quality."""
+        if not chain:
+            return 1.0
+        lam = self.recency_lambda
+        n = len(chain)
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for k, block in enumerate(chain):
+            weight = lam ** (n - 1 - k)
+            tx = getattr(block, "transaction", {})
+            outcome_str = tx.get("outcome", "") if isinstance(tx, dict) else ""
+            if outcome_str in ("completed", "success"):
+                outcome = 1.0
+            elif outcome_str in ("failed", "error"):
+                outcome = 0.0
+            else:
+                outcome = 1.0  # backward compat: unknown = success
+            weighted_sum += weight * outcome
+            weight_total += weight
+        if weight_total < 1e-10:
+            return 1.0
+        return min(max(weighted_sum / weight_total, 0.0), 1.0)
+
+    def _compute_standard_trust_evidence(
+        self, pubkey: str, context: Optional[str] = None
+    ) -> dict:
         """Compute trust with full evidence for the standard (non-delegated) path."""
         chain = self.store.get_chain(pubkey)
-        unique_peers = self._count_unique_peers(chain)
-        interactions = len(chain)
+        filtered_chain = (
+            self._get_chain_for_context(pubkey, context) if context else chain
+        )
+        unique_peers = self._count_unique_peers(filtered_chain)
+        interactions = len(filtered_chain)
 
         # Check for fraud by ANY delegate (active OR revoked).
         if self.delegation_store is not None:
@@ -115,19 +173,20 @@ class TrustEngine:
                 if self._has_double_spend(delegate_chain):
                     return {
                         "trust_score": 0.0, "connectivity": 0.0,
-                        "integrity": 0.0, "diversity": 0.0,
+                        "integrity": 0.0, "diversity": 0.0, "recency": 0.0,
                         "unique_peers": unique_peers, "interactions": interactions,
                         "fraud": True, "path_diversity": 0.0,
                     }
 
         integrity = self.compute_chain_integrity(pubkey)
+        recency = self._compute_recency(filtered_chain)
 
         if self.netflow:
             # Seed nodes get trust = 1.0
             if pubkey in self.seed_nodes:
                 return {
                     "trust_score": 1.0, "connectivity": 1.0,
-                    "integrity": 1.0, "diversity": 1.0,
+                    "integrity": 1.0, "diversity": 1.0, "recency": 1.0,
                     "unique_peers": unique_peers, "interactions": interactions,
                     "fraud": False, "path_diversity": float("inf"),
                 }
@@ -140,24 +199,29 @@ class TrustEngine:
                 return {
                     "trust_score": 0.0, "connectivity": 0.0,
                     "integrity": integrity, "diversity": diversity,
+                    "recency": recency,
                     "unique_peers": unique_peers, "interactions": interactions,
                     "fraud": False, "path_diversity": path_div,
                 }
 
             connectivity = min(path_div / self.connectivity_threshold, 1.0)
-            trust_score = min(max(connectivity * integrity * diversity, 0.0), 1.0)
+            trust_score = min(
+                max(connectivity * integrity * diversity * recency, 0.0), 1.0
+            )
 
             return {
                 "trust_score": trust_score, "connectivity": connectivity,
                 "integrity": integrity, "diversity": diversity,
+                "recency": recency,
                 "unique_peers": unique_peers, "interactions": interactions,
                 "fraud": False, "path_diversity": path_div,
             }
 
-        # No seeds configured — no Sybil resistance, use integrity only.
+        # No seeds configured — no Sybil resistance, use integrity × recency.
         return {
-            "trust_score": integrity, "connectivity": 1.0,
-            "integrity": integrity, "diversity": 1.0,
+            "trust_score": min(max(integrity * recency, 0.0), 1.0),
+            "connectivity": 1.0,
+            "integrity": integrity, "diversity": 1.0, "recency": recency,
             "unique_peers": unique_peers, "interactions": interactions,
             "fraud": False, "path_diversity": 0.0,
         }
@@ -180,36 +244,40 @@ class TrustEngine:
                 if not delegation.is_active:
                     return {
                         "trust_score": 0.0, "connectivity": 0.0,
-                        "integrity": 0.0, "diversity": 0.0,
+                        "integrity": 0.0, "diversity": 0.0, "recency": 0.0,
                         "unique_peers": 0, "interactions": 0,
                         "fraud": False, "path_diversity": 0.0,
                     }
                 root_pubkey = self._resolve_root(delegation)
-                root_evidence = self._compute_standard_trust_evidence(root_pubkey)
-                active_count = max(
-                    self.delegation_store.get_active_delegation_count(root_pubkey), 1
+                root_evidence = self._compute_standard_trust_evidence(
+                    root_pubkey, interaction_type
                 )
-                effective = min(max(root_evidence["trust_score"] / active_count, 0.0), 1.0)
-                return {**root_evidence, "trust_score": effective}
+                blended = self._compute_delegated_trust(
+                    pubkey, delegation, interaction_type
+                )
+                return {**root_evidence, "trust_score": blended}
 
             if self.delegation_store.is_delegate(pubkey):
                 return {
                     "trust_score": 0.0, "connectivity": 0.0,
-                    "integrity": 0.0, "diversity": 0.0,
+                    "integrity": 0.0, "diversity": 0.0, "recency": 0.0,
                     "unique_peers": 0, "interactions": 0,
                     "fraud": False, "path_diversity": 0.0,
                 }
 
-        return self._compute_standard_trust_evidence(pubkey)
+        return self._compute_standard_trust_evidence(pubkey, interaction_type)
 
     def _compute_delegated_trust(
-        self, delegation: DelegationRecord, interaction_type: Optional[str] = None
+        self,
+        pubkey: str,
+        delegation: DelegationRecord,
+        interaction_type: Optional[str] = None,
     ) -> float:
-        """Compute trust for a delegated identity.
+        """Compute trust for a delegated identity with cold start blending.
 
-        Matches Rust TrustEngine: flat budget split from the root identity's trust.
-        effective = root_trust / active_delegation_count_at_root
-        No per-level split or depth discount (IETF §5 Sybil resistance).
+        Blends delegation-based trust with emerging direct trust as
+        interactions accumulate. Once cold_start_threshold interactions
+        are reached, direct trust is used exclusively.
         """
         # Check expiry
         if not delegation.is_active:
@@ -223,15 +291,36 @@ class TrustEngine:
         # Resolve the root identity
         root_pubkey = self._resolve_root(delegation)
 
-        # Compute the root's trust (standard computation)
-        root_trust = self._compute_standard_trust(root_pubkey)
+        # Compute delegation depth
+        depth = len(self._build_delegation_chain(delegation))
 
-        # Flat budget split: root_trust / active_delegation_count at root level
-        active_count = self.delegation_store.get_active_delegation_count(root_pubkey)
-        active_count = max(active_count, 1)  # avoid division by zero
-        effective = root_trust / active_count
+        # Compute delegated trust: root_trust * factor / active_count
+        root_trust = self._compute_standard_trust(root_pubkey, interaction_type)
+        active_count = max(
+            self.delegation_store.get_active_delegation_count(root_pubkey), 1
+        )
+        depth_factor = (
+            self.delegation_factor ** (depth - 1) if depth > 1 else 1.0
+        )
+        delegated = (
+            root_trust * self.delegation_factor * depth_factor / active_count
+        )
 
-        return min(max(effective, 0.0), 1.0)
+        # Cold start blending
+        filtered_chain = self._get_chain_for_context(pubkey, interaction_type)
+        direct_interactions = len(filtered_chain)
+
+        if direct_interactions >= self.cold_start_threshold:
+            return self._compute_standard_trust(pubkey, interaction_type)
+
+        blend = direct_interactions / max(self.cold_start_threshold, 1)
+        direct = (
+            self._compute_standard_trust(pubkey, interaction_type)
+            if direct_interactions > 0
+            else 0.0
+        )
+        blended = delegated * (1.0 - blend) + direct * blend
+        return min(max(blended, 0.0), 1.0)
 
     def _resolve_root(self, delegation: DelegationRecord) -> str:
         """Walk up the delegation chain to find the root persistent identity."""
