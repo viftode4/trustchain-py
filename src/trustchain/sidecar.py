@@ -573,6 +573,10 @@ class TrustChainSidecar:
             body["transaction"] = transaction
         return self._post("/propose", body)
 
+    def audit(self, transaction: dict[str, Any]) -> dict[str, Any]:
+        """POST /audit — record a single-player audit block (no counterparty needed)."""
+        return self._post("/audit", {"transaction": transaction})
+
     # -- Delegation API --
     # These endpoints are supported by both the Rust sidecar and Python TrustChainNode.
 
