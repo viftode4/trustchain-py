@@ -91,5 +91,15 @@ from trustchain.sidecar import (
     with_trust, download_binary,
 )
 
+# === Audit (single-player mode) ===
+from trustchain.audit import (
+    AuditLevel,
+    EventType,
+    SchemaId,
+    audited,
+    default_events,
+    validate_transaction,
+)
+
 # === Trust tools (framework-agnostic) ===
 from trustchain.tools import trust_tools

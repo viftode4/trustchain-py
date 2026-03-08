@@ -577,6 +577,37 @@ class TrustChainSidecar:
         """POST /audit — record a single-player audit block (no counterparty needed)."""
         return self._post("/audit", {"transaction": transaction})
 
+    def audit_batch(self, entries: list[dict[str, Any]]) -> dict[str, Any]:
+        """POST /audit-batch — record multiple audit blocks atomically.
+
+        Args:
+            entries: List of transaction dicts. Each is validated against the
+                     configured schema (if any) before any blocks are created.
+
+        Returns:
+            ``{"blocks": [...], "count": N}``
+        """
+        return self._post("/audit-batch", {"entries": entries})
+
+    def audit_report(self) -> dict[str, Any]:
+        """GET /audit-report — summary statistics for the local audit chain.
+
+        Returns:
+            Dict with total_blocks, audit_blocks, bilateral_blocks,
+            integrity_valid, integrity_score, event_type_breakdown,
+            first_timestamp, last_timestamp, chain_length.
+        """
+        return self._get("/audit-report")
+
+    def export_chain(self) -> dict[str, Any]:
+        """GET /export-chain — export the full chain as a signed JSON bundle.
+
+        Returns:
+            ``{"pubkey", "chain", "exported_at", "chain_hash", "signature"}``
+            — self-contained and verifiable without a running node.
+        """
+        return self._get("/export-chain")
+
     # -- Delegation API --
     # These endpoints are supported by both the Rust sidecar and Python TrustChainNode.
 

@@ -33,6 +33,7 @@ class BlockType(str, Enum):
     DELEGATION = "delegation"
     REVOCATION = "revocation"
     SUCCESSION = "succession"
+    AUDIT = "audit"
 
 
 @dataclass

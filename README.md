@@ -93,7 +93,9 @@ Your agent process
       └── All HTTP requests → sidecar → bilateral trust handshake → forward to destination
 ```
 
-Every call to a known TrustChain peer triggers an invisible bilateral handshake: both parties sign a half-block recording the interaction. Trust scores emerge from real interaction history, verified via NetFlow Sybil analysis.
+Every call to a known TrustChain peer triggers an invisible bilateral handshake: both parties sign a half-block recording the interaction. Trust scores emerge from real interaction history, verified via MeritRank random walks (default) or NetFlow max-flow analysis.
+
+When no TrustChain-aware peer exists, the SDK falls back to **single-player audit mode** — recording self-signed audit blocks as a cryptographic audit log. Useful without a network, like an agent black box recorder.
 
 ## Programmatic Usage
 
@@ -123,12 +125,13 @@ score = engine.compute_trust(bob.pubkey_hex)
 | `trustchain.integrations` | LangChain, FastAPI/ASGI, MCP, CrewAI adapters |
 | `trustchain.cli` | CLI entry point (`trustchain` command) |
 | `trustchain.protocol` | `TrustChainProtocol` — proposal/agreement state machine |
-| `trustchain.trust` | `TrustEngine` — NetFlow + chain integrity + statistical scoring |
+| `trustchain.trust` | `TrustEngine` — 4-factor trust (connectivity × integrity × diversity × recency) |
 | `trustchain.netflow` | NetFlow Sybil resistance (max-flow from seed nodes) |
 | `trustchain.identity` | Ed25519 keypair generation and management |
 | `trustchain.halfblock` | `HalfBlock` data structure, signing, and validation |
 | `trustchain.blockstore` | `MemoryBlockStore` and `SqliteBlockStore` |
 | `trustchain.delegation` | Identity delegation, succession, and revocation |
+| `trustchain.audit` | `AuditLevel`, `EventType` — single-player audit block support |
 | `trustchain.crawler` | Network graph crawler and DAG builder |
 
 ## Development

@@ -812,6 +812,41 @@ class TrustChainProtocol:
         if cert.parent_certificate is not None:
             self.verify_delegation_certificate(cert.parent_certificate, cert.delegator_pubkey)
 
+    def create_audit(
+        self,
+        transaction: Dict[str, Any],
+        timestamp: Optional[float] = None,
+    ) -> HalfBlock:
+        """Create a self-referencing AUDIT block.
+
+        Audit blocks record unilateral events (no counterparty needed).
+        - block_type = BlockType.AUDIT
+        - link_public_key = self.pubkey (self-referencing)
+        - link_sequence_number = 0
+        """
+        seq = self.store.get_latest_seq(self.pubkey) + 1
+        prev_hash = self.store.get_head_hash(self.pubkey)
+
+        block = create_half_block(
+            identity=self.identity,
+            sequence_number=seq,
+            link_public_key=self.pubkey,
+            link_sequence_number=0,
+            previous_hash=prev_hash,
+            block_type=BlockType.AUDIT,
+            transaction=transaction,
+            timestamp=timestamp or _now_ms(),
+        )
+
+        self.store.add_block(block)
+        logger.debug(
+            "Created audit block: %s seq=%d action=%s",
+            self.identity.short_id,
+            seq,
+            transaction.get("action", "unknown"),
+        )
+        return block
+
     def _check_circular_delegation(self, delegate_pubkey: str) -> None:
         """Reject delegation if it would create a circular chain."""
         if self.delegation_store is None:
