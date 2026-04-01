@@ -2,11 +2,13 @@
 
 [![PyPI](https://img.shields.io/pypi/v/trustchain-py.svg)](https://pypi.org/project/trustchain-py/)
 [![CI](https://github.com/viftode4/trustchain-py/actions/workflows/ci.yml/badge.svg)](https://github.com/viftode4/trustchain-py/actions)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 **Decentralized trust for AI agents. One decorator, zero config.**
 
 TrustChain gives every agent-to-agent interaction a cryptographic trust score — without changing your code. Add one decorator, and all HTTP calls are automatically trust-protected via a transparent sidecar proxy. No blockchain, no tokens, no gas fees.
+
+> **[Quickstart guide →](https://github.com/viftode4/trustchain#quick-start)** — install the binary, run as a sidecar, or use the Python decorator.
 
 ## Quick Start
 
@@ -161,4 +163,4 @@ Implements [draft-pouwelse-trustchain-01](https://datatracker.ietf.org/doc/draft
 
 ## License
 
-MIT
+Apache-2.0

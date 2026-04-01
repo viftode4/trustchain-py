@@ -101,5 +101,69 @@ from trustchain.audit import (
     validate_transaction,
 )
 
+# === Behavioral detection (change detection + selective scamming) ===
+from trustchain.behavioral import (
+    BehavioralConfig,
+    BehavioralAnalysis,
+    SelectiveTargetingResult,
+    failure_rate,
+    detect_behavioral_change,
+    detect_selective_targeting,
+)
+
+# === Collusion ring detection ===
+from trustchain.collusion import (
+    CollusionConfig,
+    CollusionSignals,
+    has_reciprocity_anomaly,
+    peer_concentration,
+    detect_collusion,
+)
+
+# === Tiers (progressive unlocking) ===
+from trustchain.tiers import TrustTier, compute_tier, max_transaction_value
+
+# === Thresholds (decision trust) ===
+from trustchain.thresholds import min_trust_threshold, risk_threshold, required_deposit
+
+# === Sanctions (graduated penalties) ===
+from trustchain.sanctions import (
+    ViolationSeverity,
+    SanctionConfig,
+    Violation,
+    SanctionResult,
+    classify_violation,
+    compute_penalty,
+    compute_sanctions,
+)
+
+# === Correlation penalty (delegation trees) ===
+from trustchain.correlation import (
+    CorrelationConfig,
+    delegation_tree_penalty,
+    delegator_penalty,
+    compute_delegator_correlation_penalty,
+)
+
+# === Forgiveness / trust recovery ===
+from trustchain.forgiveness import (
+    ForgivenessConfig,
+    RecoverySeverity,
+    apply_forgiveness,
+    recovery_ceiling,
+    asymmetric_decay_weight,
+)
+
+# === Sealed rating (commit-reveal) ===
+from trustchain.sealed_rating import (
+    SealedRatingConfig,
+    RatingCommitment,
+    RatingReveal,
+    create_commitment,
+    verify_reveal,
+    extract_sealed_rating,
+    effective_sealed_rating,
+)
+
 # === Trust tools (framework-agnostic) ===
 from trustchain.tools import trust_tools

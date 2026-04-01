@@ -15,8 +15,22 @@ import networkx as nx
 
 from trustchain.blockstore import BlockStore
 from trustchain.delegation import DelegationRecord, DelegationStore
+from trustchain.forgiveness import (
+    ForgivenessConfig,
+    RecoverySeverity,
+    apply_forgiveness,
+    asymmetric_decay_weight,
+)
 from trustchain.netflow import NetFlowTrust
 from trustchain.protocol import TrustChainProtocol
+from trustchain.sanctions import SanctionConfig, ViolationSeverity, compute_sanctions
+from trustchain.behavioral import (
+    BehavioralConfig,
+    detect_behavioral_change,
+    detect_selective_targeting,
+)
+from trustchain.collusion import CollusionConfig, detect_collusion
+from trustchain.sealed_rating import extract_sealed_rating
 from trustchain.store import RecordStore
 
 logger = logging.getLogger("trustchain.trust")
@@ -33,12 +47,13 @@ DEFAULT_RECENCY_LAMBDA = 0.95
 
 
 class TrustEngine:
-    """Unified trust computation: Trust = connectivity × integrity × diversity × recency.
+    """Unified trust computation (weighted-additive, Layer 2.2).
 
-    - connectivity = min(path_diversity / K, 1.0) — Sybil resistance
-    - integrity = chain_integrity — hash linkage, signatures
-    - diversity = min(unique_peers / M, 1.0) — interaction partner spread
-    - recency = exponential-decay-weighted outcome quality
+    Trust = (0.3 × structural + 0.7 × behavioral) × confidence_scale
+    - structural = connectivity × integrity (Sybil resistance + chain health)
+    - behavioral = recency (quality-weighted track record)
+    - confidence_scale = min(interactions / cold_start_threshold, 1.0)
+    - Sybil gate: connectivity < ε → hard zero
     """
 
     def __init__(
@@ -83,13 +98,12 @@ class TrustEngine:
         uses cold start blending between delegation trust and direct trust.
         Otherwise, returns the standard trust computation.
 
-        Components (standard path, multiplicative):
-        - Connectivity = min(path_diversity / K, 1.0) — Sybil resistance
-        - Integrity = chain validity fraction — broken chain = major penalty
-        - Diversity = min(unique_peers / M, 1.0) — interaction partner spread
-        - Recency = exponential-decay-weighted outcome quality
-
-        If no seed nodes configured, returns integrity × recency.
+        Standard path (weighted-additive, Layer 2.2):
+        Trust = (0.3 × structural + 0.7 × behavioral) × confidence_scale
+        - structural = connectivity × integrity
+        - behavioral = recency (quality-weighted)
+        - confidence_scale = min(interactions / cold_start_threshold, 1.0)
+        - Sybil gate: hard zero if no path from seeds
         """
         # Check if this is a delegated identity
         if self.delegation_store is not None:
@@ -109,7 +123,7 @@ class TrustEngine:
     def _compute_standard_trust(
         self, pubkey: str, context: Optional[str] = None
     ) -> float:
-        """Standard trust computation: connectivity × integrity × diversity × recency."""
+        """Standard trust: (0.3 × structural + 0.7 × behavioral) × confidence_scale."""
         evidence = self._compute_standard_trust_evidence(pubkey, context)
         return evidence["trust_score"]
 
@@ -130,29 +144,222 @@ class TrustEngine:
             )
         ]
 
-    def _compute_recency(self, chain) -> float:
-        """Compute recency: exponential-decay-weighted outcome quality."""
-        if not chain:
-            return 1.0
+    def _compute_recency(self, chain, extra_negatives: int = 0) -> float:
+        """Compute recency: value-weighted exponential-decay outcome quality.
+
+        Empty chain returns 0.5 (uninformative prior, Josang & Ismail 2002).
+        Quality extracted via fallback chain: quality > requester_rating >
+        provider_rating > binary outcome.
+
+        Value weighting: each interaction weighted by price/avg_price so cheap
+        wash-trades contribute negligibly. Research: Olariu et al. 2024.
+
+        extra_negatives: virtual quality=0.0 entries for expired timeouts
+        (Layer 1.5). Each gets weight 1.0 (most recent equivalent).
+        """
+        if not chain and extra_negatives == 0:
+            return 0.5
         lam = self.recency_lambda
         n = len(chain)
+        avg_price = self._compute_avg_price(chain)
+        fg_config = ForgivenessConfig()
         weighted_sum = 0.0
         weight_total = 0.0
         for k, block in enumerate(chain):
-            weight = lam ** (n - 1 - k)
-            tx = getattr(block, "transaction", {})
-            outcome_str = tx.get("outcome", "") if isinstance(tx, dict) else ""
-            if outcome_str in ("completed", "success"):
-                outcome = 1.0
-            elif outcome_str in ("failed", "error"):
-                outcome = 0.0
-            else:
-                outcome = 1.0  # backward compat: unknown = success
-            weighted_sum += weight * outcome
+            quality = self._extract_quality(block)
+            # Layer 4.4: Asymmetric decay — negative outcomes decay faster.
+            age = n - 1 - k
+            is_negative = quality < 0.5
+            decay = asymmetric_decay_weight(
+                lam, age, is_negative, fg_config.negative_decay_speedup
+            )
+            price = self._extract_price(block)
+            value_weight = price / avg_price if avg_price > 1e-10 else 1.0
+            weight = decay * value_weight
+            weighted_sum += weight * quality
             weight_total += weight
+        # Add virtual negatives for timeouts (quality=0.0, weight=1.0).
+        weight_total += extra_negatives
         if weight_total < 1e-10:
-            return 1.0
+            return 0.5
         return min(max(weighted_sum / weight_total, 0.0), 1.0)
+
+    @staticmethod
+    def _extract_price(block) -> float:
+        """Extract price from a block's transaction, defaulting to 1.0."""
+        tx = getattr(block, "transaction", {})
+        if not isinstance(tx, dict):
+            return 1.0
+        price = tx.get("price")
+        if price is not None:
+            try:
+                return max(0.0, float(price))
+            except (TypeError, ValueError):
+                pass
+        return 1.0
+
+    @staticmethod
+    def _compute_avg_price(chain) -> float:
+        """Compute average price across a chain. Returns 1.0 for empty chains."""
+        if not chain:
+            return 1.0
+        total = sum(TrustEngine._extract_price(b) for b in chain)
+        avg = total / len(chain)
+        return avg if avg > 1e-10 else 1.0
+
+    @staticmethod
+    def wilson_lower_bound(positive: float, total: float, z: float = 1.96) -> float:
+        """Wilson lower-bound confidence score.
+
+        Research: Evan Miller 2009 "How Not To Sort By Average Rating",
+        TRAVOS (Teacy et al. 2006).
+        """
+        if total == 0.0:
+            return 0.0
+        p = positive / total
+        d = 1.0 + z * z / total
+        center = p + z * z / (2.0 * total)
+        spread = z * math.sqrt((p * (1.0 - p) + z * z / (4.0 * total)) / total)
+        return max((center - spread) / d, 0.0)
+
+    @staticmethod
+    def _beta_reputation(chain) -> float | None:
+        """Beta reputation: Bayesian updating with temporal decay.
+
+        Returns None for empty chains, score in [0, 1] otherwise.
+        Research: Josang & Ismail 2002, Josang, Luo, Chen 2008.
+        """
+        if not chain:
+            return None
+        lam = 0.95
+        alpha = 1.0  # prior
+        beta_param = 1.0  # prior
+        for block in chain:
+            quality = TrustEngine._extract_quality(block)
+            alpha = lam * alpha + quality
+            beta_param = lam * beta_param + (1.0 - quality)
+        return min(max(alpha / (alpha + beta_param), 0.0), 1.0)
+
+    def _count_timeouts(self, pubkey: str, chain) -> int:
+        """Count expired orphan proposals directed at pubkey (timeouts).
+
+        Scans counterparties' chains for proposals with expired deadline_ms
+        and no matching agreement.
+
+        Research: trust-model-gaps §4 "Timeout Enforcement".
+        """
+        # Collect counterparties from the target's chain.
+        counterparties: Set[str] = set()
+        for block in chain:
+            if block.public_key != block.link_public_key:
+                counterparties.add(block.link_public_key)
+
+        # Use latest timestamp in chain as proxy for "now".
+        now_ms = max((b.timestamp for b in chain), default=0)
+        if now_ms == 0:
+            import time
+            now_ms = int(time.time() * 1000)
+
+        timeout_count = 0
+        for cp_pk in counterparties:
+            cp_chain = self.store.get_chain(cp_pk)
+            for block in cp_chain:
+                bt = getattr(block, "block_type", "")
+                if bt != "proposal" or block.link_public_key != pubkey:
+                    continue
+                tx = getattr(block, "transaction", {})
+                if not isinstance(tx, dict):
+                    continue
+                deadline = tx.get("deadline_ms")
+                if deadline is None:
+                    continue
+                try:
+                    deadline = int(deadline)
+                except (TypeError, ValueError):
+                    continue
+                if deadline >= now_ms:
+                    continue
+                # Check if target has a matching agreement.
+                linked = self.store.get_linked_block(block) if hasattr(self.store, "get_linked_block") else None
+                if linked is None:
+                    timeout_count += 1
+        return timeout_count
+
+    @staticmethod
+    def _extract_quality(block) -> float:
+        """Extract quality signal from a block's transaction.
+
+        Fallback chain (first present value wins):
+          1. ``quality`` field (continuous 0.0-1.0)
+          2. ``requester_rating`` field (continuous 0.0-1.0)
+          3. ``provider_rating`` field (continuous 0.0-1.0)
+          4. Binary outcome: completed/success -> 1.0, failed/error -> 0.0
+          5. Unknown -> 1.0 (backward compat)
+
+        Research: trust-differentiation-fixes P0, reputation-game-theory §3.
+        """
+        tx = getattr(block, "transaction", {})
+        if not isinstance(tx, dict):
+            return 1.0
+        # 0. Layer 4.3: Check for sealed rating (commit-reveal protocol).
+        sealed = extract_sealed_rating(tx)
+        if sealed is not None:
+            return max(0.0, min(sealed, 1.0))
+        # If sealed but not yet revealed (pending), use backward-compat default.
+        if tx.get("rating_commitment") is not None and tx.get("revealed_rating") is None:
+            return 1.0  # Pending reveal
+        # 1. Explicit quality
+        quality = tx.get("quality")
+        if quality is not None:
+            try:
+                return max(0.0, min(float(quality), 1.0))
+            except (TypeError, ValueError):
+                pass
+        # 2. Requester rating
+        rr = tx.get("requester_rating")
+        if rr is not None:
+            try:
+                return max(0.0, min(float(rr), 1.0))
+            except (TypeError, ValueError):
+                pass
+        # 3. Provider rating
+        pr = tx.get("provider_rating")
+        if pr is not None:
+            try:
+                return max(0.0, min(float(pr), 1.0))
+            except (TypeError, ValueError):
+                pass
+        # 4. Binary outcome
+        outcome_str = tx.get("outcome", "")
+        if outcome_str in ("completed", "success"):
+            return 1.0
+        if outcome_str in ("failed", "error"):
+            return 0.0
+        return 1.0  # backward compat
+
+    @staticmethod
+    def _compute_avg_quality(chain) -> float:
+        """Compute average quality across a chain."""
+        if not chain:
+            return 0.0
+        total = sum(TrustEngine._extract_quality(b) for b in chain)
+        return total / len(chain)
+
+    @staticmethod
+    def _count_good_since_violation(chain) -> int:
+        """Count consecutive good interactions since the last violation.
+
+        Scans chain from most recent backward. Good = quality >= 0.5.
+        Stops at first violation (quality < 0.3).
+        """
+        count = 0
+        for block in reversed(chain):
+            quality = TrustEngine._extract_quality(block)
+            if quality < 0.3:
+                break
+            if quality >= 0.5:
+                count += 1
+        return count
 
     def _compute_standard_trust_evidence(
         self, pubkey: str, context: Optional[str] = None
@@ -165,21 +372,77 @@ class TrustEngine:
         unique_peers = self._count_unique_peers(filtered_chain)
         interactions = len(filtered_chain)
 
+        # Zero-evidence helper for fraud/failure.
+        zero = {
+            "trust_score": 0.0, "connectivity": 0.0,
+            "integrity": 0.0, "diversity": 0.0, "recency": 0.0,
+            "unique_peers": unique_peers, "interactions": interactions,
+            "fraud": False, "path_diversity": 0.0,
+            "avg_quality": 0.0, "value_weighted_recency": 0.0,
+            "timeout_count": 0, "confidence": 0.0,
+            "sample_size": 0, "positive_count": 0,
+            "required_deposit_ratio": 1.0,
+            "sanction_penalty": 0.0, "violation_count": 0,
+            "correlation_penalty": 0.0,
+            "forgiveness_factor": 1.0,
+            "good_interactions_since_violation": 0,
+            "behavioral_change": 0.0,
+            "behavioral_anomaly": False,
+            "selective_scamming": False,
+            "collusion_cluster_density": 0.0,
+            "collusion_external_ratio": 0.0,
+            "collusion_temporal_burst": False,
+            "collusion_reciprocity_anomaly": False,
+            "requester_trust": None,
+            "payment_reliability": None,
+            "rating_fairness": None,
+            "dispute_rate": None,
+        }
+
         # Check for fraud by ANY delegate (active OR revoked).
         if self.delegation_store is not None:
             delegations = self.delegation_store.get_delegations_by_delegator(pubkey)
             for d in delegations:
                 delegate_chain = self.store.get_chain(d.delegate_pubkey)
                 if self._has_double_spend(delegate_chain):
-                    return {
-                        "trust_score": 0.0, "connectivity": 0.0,
-                        "integrity": 0.0, "diversity": 0.0, "recency": 0.0,
-                        "unique_peers": unique_peers, "interactions": interactions,
-                        "fraud": True, "path_diversity": 0.0,
-                    }
+                    return {**zero, "fraud": True,
+                            "sanction_penalty": 1.0, "violation_count": 1,
+                            "correlation_penalty": 1.0}
 
         integrity = self.compute_chain_integrity(pubkey)
-        recency = self._compute_recency(filtered_chain)
+        avg_quality = self._compute_avg_quality(filtered_chain)
+
+        # Layer 1.5: Timeout enforcement.
+        timeout_count = self._count_timeouts(pubkey, filtered_chain)
+
+        # Layer 1.4: Value-weighted recency with timeout integration.
+        recency = self._compute_recency(filtered_chain, timeout_count)
+        value_weighted_recency = self._compute_recency(filtered_chain, 0)
+
+        # Layer 2.1: Wilson score confidence.
+        sample_size = interactions
+        positive_count = sum(
+            1 for b in filtered_chain
+            if self._extract_quality(b) >= 0.5
+        )
+        confidence = self.wilson_lower_bound(positive_count, sample_size)
+
+        # Layer 2.3: Beta reputation (Josang & Ismail 2002).
+        beta_rep = self._beta_reputation(filtered_chain)
+
+        # Common fields for all evidence dicts.
+        common = {
+            "avg_quality": avg_quality,
+            "value_weighted_recency": value_weighted_recency,
+            "timeout_count": timeout_count,
+            "confidence": confidence,
+            "sample_size": sample_size,
+            "positive_count": positive_count,
+            "beta_reputation": beta_rep,
+        }
+
+        # Layer 4.1: Graduated sanctions (Ostrom 1990).
+        _sr = compute_sanctions(timeout_count, avg_quality, False, SanctionConfig())
 
         if self.netflow:
             # Seed nodes get trust = 1.0
@@ -189,6 +452,25 @@ class TrustEngine:
                     "integrity": 1.0, "diversity": 1.0, "recency": 1.0,
                     "unique_peers": unique_peers, "interactions": interactions,
                     "fraud": False, "path_diversity": float("inf"),
+                    **common,
+                    "confidence": 1.0, "value_weighted_recency": 1.0,
+                    "timeout_count": 0,
+                    "required_deposit_ratio": 0.0,
+                    "sanction_penalty": 0.0, "violation_count": 0,
+                    "correlation_penalty": 0.0,
+                    "forgiveness_factor": 1.0,
+                    "good_interactions_since_violation": 0,
+                    "behavioral_change": 0.0,
+                    "behavioral_anomaly": False,
+                    "selective_scamming": False,
+                    "collusion_cluster_density": 0.0,
+                    "collusion_external_ratio": 0.0,
+                    "collusion_temporal_burst": False,
+                    "collusion_reciprocity_anomaly": False,
+                    "requester_trust": None,
+                    "payment_reliability": None,
+                    "rating_fairness": None,
+                    "dispute_rate": None,
                 }
 
             path_div = self.netflow.compute_path_diversity(pubkey)
@@ -202,12 +484,57 @@ class TrustEngine:
                     "recency": recency,
                     "unique_peers": unique_peers, "interactions": interactions,
                     "fraud": False, "path_diversity": path_div,
+                    **common,
+                    "required_deposit_ratio": 1.0,
+                    "sanction_penalty": _sr.total_penalty,
+                    "violation_count": _sr.violation_count,
+                    "correlation_penalty": 0.0,
+                    "forgiveness_factor": 1.0,
+                    "good_interactions_since_violation": 0,
+                    "behavioral_change": 0.0,
+                    "behavioral_anomaly": False,
+                    "selective_scamming": False,
+                    "collusion_cluster_density": 0.0,
+                    "collusion_external_ratio": 0.0,
+                    "collusion_temporal_burst": False,
+                    "collusion_reciprocity_anomaly": False,
+                    "requester_trust": None,
+                    "payment_reliability": None,
+                    "rating_fairness": None,
+                    "dispute_rate": None,
                 }
 
             connectivity = min(path_div / self.connectivity_threshold, 1.0)
-            trust_score = min(
-                max(connectivity * integrity * diversity * recency, 0.0), 1.0
+
+            # Layer 2.2: Weighted-additive trust formula.
+            structural = min(connectivity, 1.0) * integrity
+            behavioral = recency
+            confidence_scale = min(
+                interactions / max(self.cold_start_threshold, 1), 1.0
             )
+            trust_score = min(
+                max((0.3 * structural + 0.7 * behavioral) * confidence_scale, 0.0),
+                1.0,
+            )
+
+            # Layer 4.4: Forgiveness (Josang 2007, Axelrod 1984).
+            good_since = self._count_good_since_violation(filtered_chain)
+            fg_severity = (
+                RecoverySeverity(
+                    {ViolationSeverity.LIVENESS: "liveness",
+                     ViolationSeverity.QUALITY: "quality",
+                     ViolationSeverity.BYZANTINE: "fraud"}[_sr.violations[0].severity]
+                )
+                if _sr.violations
+                else RecoverySeverity.LIVENESS
+            )
+            forgiven = apply_forgiveness(
+                _sr.total_penalty, good_since, fg_severity, ForgivenessConfig()
+            )
+            fg_factor = forgiven / _sr.total_penalty if _sr.total_penalty > 1e-12 else 1.0
+
+            # Layer 5.1-5.3: Behavioral detection + collusion signals.
+            beh, sel, col = self._compute_layer5_signals(pubkey, filtered_chain)
 
             return {
                 "trust_score": trust_score, "connectivity": connectivity,
@@ -215,16 +542,157 @@ class TrustEngine:
                 "recency": recency,
                 "unique_peers": unique_peers, "interactions": interactions,
                 "fraud": False, "path_diversity": path_div,
+                **common,
+                "required_deposit_ratio": max(0.0, min(1.0, 1.0 - trust_score)),
+                "sanction_penalty": forgiven,
+                "violation_count": _sr.violation_count,
+                "correlation_penalty": 0.0,
+                "forgiveness_factor": fg_factor,
+                "good_interactions_since_violation": good_since,
+                "behavioral_change": beh.change_magnitude,
+                "behavioral_anomaly": beh.is_anomalous,
+                "selective_scamming": sel.is_selective,
+                "collusion_cluster_density": col.cluster_density,
+                "collusion_external_ratio": col.external_connection_ratio,
+                "collusion_temporal_burst": col.temporal_burst,
+                "collusion_reciprocity_anomaly": col.reciprocity_anomaly,
+                "requester_trust": None,
+                "payment_reliability": None,
+                "rating_fairness": None,
+                "dispute_rate": None,
             }
 
-        # No seeds configured — no Sybil resistance, use integrity × recency.
+        # No seeds configured — no Sybil resistance. Weighted-additive with
+        # connectivity=1.0. Confidence still scales by interactions.
+        confidence_scale = min(
+            interactions / max(self.cold_start_threshold, 1), 1.0
+        )
+        _ts_no_seeds = min(
+            max((0.3 * integrity + 0.7 * recency) * confidence_scale, 0.0),
+            1.0,
+        )
+        # Layer 4.4: Forgiveness (Josang 2007, Axelrod 1984).
+        good_since_ns = self._count_good_since_violation(filtered_chain)
+        fg_severity_ns = (
+            RecoverySeverity(
+                {ViolationSeverity.LIVENESS: "liveness",
+                 ViolationSeverity.QUALITY: "quality",
+                 ViolationSeverity.BYZANTINE: "fraud"}[_sr.violations[0].severity]
+            )
+            if _sr.violations
+            else RecoverySeverity.LIVENESS
+        )
+        forgiven_ns = apply_forgiveness(
+            _sr.total_penalty, good_since_ns, fg_severity_ns, ForgivenessConfig()
+        )
+        fg_factor_ns = forgiven_ns / _sr.total_penalty if _sr.total_penalty > 1e-12 else 1.0
+
+        # Layer 5.1-5.3: Behavioral detection + collusion signals.
+        beh_ns, sel_ns, col_ns = self._compute_layer5_signals(pubkey, filtered_chain)
+
         return {
-            "trust_score": min(max(integrity * recency, 0.0), 1.0),
+            "trust_score": _ts_no_seeds,
             "connectivity": 1.0,
             "integrity": integrity, "diversity": 1.0, "recency": recency,
             "unique_peers": unique_peers, "interactions": interactions,
             "fraud": False, "path_diversity": 0.0,
+            **common,
+            "required_deposit_ratio": max(0.0, min(1.0, 1.0 - _ts_no_seeds)),
+            "sanction_penalty": forgiven_ns,
+            "violation_count": _sr.violation_count,
+            "correlation_penalty": 0.0,
+            "forgiveness_factor": fg_factor_ns,
+            "good_interactions_since_violation": good_since_ns,
+            "behavioral_change": beh_ns.change_magnitude,
+            "behavioral_anomaly": beh_ns.is_anomalous,
+            "selective_scamming": sel_ns.is_selective,
+            "collusion_cluster_density": col_ns.cluster_density,
+            "collusion_external_ratio": col_ns.external_connection_ratio,
+            "collusion_temporal_burst": col_ns.temporal_burst,
+            "collusion_reciprocity_anomaly": col_ns.reciprocity_anomaly,
+            "requester_trust": None,
+            "payment_reliability": None,
+            "rating_fairness": None,
+            "dispute_rate": None,
         }
+
+    def _compute_layer5_signals(self, pubkey: str, filtered_chain: list):
+        """Compute Layer 5 signals: behavioral change, selective targeting, collusion.
+
+        Returns (BehavioralAnalysis, SelectiveTargetingResult, CollusionSignals).
+        """
+        beh_config = BehavioralConfig()
+        col_config = CollusionConfig()
+
+        # Extract quality values.
+        qualities = [self._extract_quality(b) for b in filtered_chain]
+
+        # L5.1: Behavioral change detection.
+        behavioral = detect_behavioral_change(qualities, beh_config)
+
+        # Build peer interaction counts.
+        peer_counts: Dict[str, int] = {}
+        for block in filtered_chain:
+            if block.public_key != block.link_public_key:
+                peer_counts[block.link_public_key] = (
+                    peer_counts.get(block.link_public_key, 0) + 1
+                )
+
+        # L5.2: Selective scamming — partition by counterparty newness.
+        qualities_to_new: List[float] = []
+        qualities_to_established: List[float] = []
+        for block in filtered_chain:
+            if block.public_key == block.link_public_key:
+                continue
+            q = self._extract_quality(block)
+            count = peer_counts.get(block.link_public_key, 0)
+            if count > 2:
+                qualities_to_established.append(q)
+            else:
+                qualities_to_new.append(q)
+        selective = detect_selective_targeting(
+            qualities_to_new, qualities_to_established, beh_config
+        )
+
+        # L5.3: Collusion signals — reciprocity + concentration.
+        reciprocity_map: Dict[str, tuple] = {}
+        for block in filtered_chain:
+            if block.public_key == block.link_public_key:
+                continue
+            q = self._extract_quality(block)
+            pk = block.link_public_key
+            if pk not in reciprocity_map:
+                reciprocity_map[pk] = ([], [])
+            reciprocity_map[pk][0].append(q)
+
+        # Load peer chains for reciprocity.
+        for peer_pk in peer_counts:
+            try:
+                peer_chain = self.store.get_chain(peer_pk)
+            except Exception:
+                continue
+            for block in peer_chain:
+                if block.link_public_key == pubkey:
+                    q = self._extract_quality(block)
+                    if peer_pk not in reciprocity_map:
+                        reciprocity_map[peer_pk] = ([], [])
+                    reciprocity_map[peer_pk][1].append(q)
+
+        reciprocity_pairs = []
+        for given, received in reciprocity_map.values():
+            avg_given = sum(given) / len(given) if given else 0.0
+            avg_received = sum(received) / len(received) if received else 0.0
+            count = min(len(given), len(received))
+            reciprocity_pairs.append((avg_given, avg_received, count))
+
+        sorted_counts = sorted(peer_counts.values(), reverse=True)
+
+        collusion = detect_collusion(
+            0.0, 0.0, False,
+            reciprocity_pairs, sorted_counts, len(filtered_chain), col_config,
+        )
+
+        return behavioral, selective, collusion
 
     def _count_unique_peers(self, chain) -> int:
         """Count distinct link_public_keys in a chain."""
@@ -233,6 +701,140 @@ class TrustEngine:
             if block.public_key != block.link_public_key:
                 peers.add(block.link_public_key)
         return len(peers)
+
+    # -------------------------------------------------------------------
+    # Layer 6.1: Requester reputation (PeerTrust, Xiong & Liu 2004)
+    # -------------------------------------------------------------------
+
+    def _get_requester_chain(self, pubkey: str) -> list:
+        """Get blocks from counterparties' chains where they record interactions
+        with ``pubkey`` as the requester (initiator)."""
+        own_chain = self.store.get_chain(pubkey)
+        peers: Set[str] = set()
+        for block in own_chain:
+            if block.public_key != block.link_public_key:
+                peers.add(block.link_public_key)
+
+        requester_chain = []
+        for peer_pk in peers:
+            for block in self.store.get_chain(peer_pk):
+                if block.link_public_key == pubkey:
+                    requester_chain.append(block)
+        return requester_chain
+
+    @staticmethod
+    def _compute_payment_reliability(chain: list) -> float:
+        """Fraction of requester-chain interactions with successful outcome."""
+        if not chain:
+            return 1.0  # benefit of doubt
+        paid = sum(
+            1
+            for b in chain
+            if (
+                b.transaction.get("payment_status") in ("completed", "paid")
+                or TrustEngine._extract_quality(b) >= 0.5
+            )
+        )
+        return paid / len(chain)
+
+    def _compute_rating_fairness(
+        self, _requester_chain: list, pubkey: str
+    ) -> Optional[float]:
+        """Agreement between requester's ratings and provider consensus.
+
+        Returns ``None`` if fewer than 3 providers were rated.
+        """
+        own_chain = self.store.get_chain(pubkey)
+
+        # Map provider → requester's ratings of that provider.
+        requester_ratings: Dict[str, List[float]] = {}
+        for block in own_chain:
+            if block.public_key == block.link_public_key:
+                continue
+            rating = block.transaction.get(
+                "requester_rating", block.transaction.get("quality")
+            )
+            if rating is not None:
+                requester_ratings.setdefault(block.link_public_key, []).append(
+                    float(rating)
+                )
+
+        if len(requester_ratings) < 3:
+            return None
+
+        deviations = []
+        for provider_pk, ratings in requester_ratings.items():
+            provider_chain = self.store.get_chain(provider_pk)
+            if not provider_chain:
+                continue
+            consensus = self._compute_avg_quality(provider_chain)
+            avg_rating = sum(ratings) / len(ratings)
+            deviations.append(abs(avg_rating - consensus))
+
+        if not deviations:
+            return None
+
+        avg_deviation = sum(deviations) / len(deviations)
+        return max(0.0, min(1.0, 1.0 - avg_deviation))
+
+    @staticmethod
+    def _compute_dispute_rate(chain: list) -> float:
+        """Fraction of requester-chain interactions resulting in disputes."""
+        if not chain:
+            return 0.0
+        disputed = sum(
+            1
+            for b in chain
+            if (
+                b.transaction.get("outcome") == "disputed"
+                or b.transaction.get("dispute") is True
+            )
+        )
+        return disputed / len(chain)
+
+    def compute_requester_trust(self, pubkey: str) -> dict:
+        """Compute trust from the requester (initiator) perspective.
+
+        Uses the same weighted-additive formula but evaluates this agent's
+        behavior as a requester: payment reliability, rating fairness,
+        dispute rate.
+
+        Research: trust-model-gaps §6, PeerTrust (Xiong & Liu 2004).
+        """
+        # Start with standard provider-perspective evidence.
+        evidence = self._compute_standard_trust_evidence(pubkey)
+
+        # Get counterparties' records about this agent.
+        requester_chain = self._get_requester_chain(pubkey)
+
+        # Requester-perspective recency.
+        if not requester_chain:
+            requester_recency = 0.5  # uninformative prior
+        else:
+            requester_recency = self._compute_recency(requester_chain, 0)
+
+        # Same weighted-additive formula.
+        confidence_scale = min(
+            evidence["interactions"] / max(self.cold_start_threshold, 1), 1.0
+        )
+        structural = evidence["connectivity"] * evidence["integrity"]
+        requester_score = max(
+            0.0,
+            min(
+                1.0,
+                (0.3 * structural + 0.7 * requester_recency) * confidence_scale,
+            ),
+        )
+
+        evidence["requester_trust"] = requester_score
+        evidence["payment_reliability"] = self._compute_payment_reliability(
+            requester_chain
+        )
+        evidence["rating_fairness"] = self._compute_rating_fairness(
+            requester_chain, pubkey
+        )
+        evidence["dispute_rate"] = self._compute_dispute_rate(requester_chain)
+        return evidence
 
     def compute_trust_with_evidence(
         self, pubkey: str, interaction_type: Optional[str] = None
@@ -247,10 +849,17 @@ class TrustEngine:
                         "integrity": 0.0, "diversity": 0.0, "recency": 0.0,
                         "unique_peers": 0, "interactions": 0,
                         "fraud": False, "path_diversity": 0.0,
+                        "avg_quality": 0.0,
+                        "required_deposit_ratio": 1.0,
+                        "sanction_penalty": 0.0, "violation_count": 0,
+                        "requester_trust": None,
+                        "payment_reliability": None,
+                        "rating_fairness": None,
+                        "dispute_rate": None,
                     }
                 root_pubkey = self._resolve_root(delegation)
                 root_evidence = self._compute_standard_trust_evidence(
-                    root_pubkey, interaction_type
+                    root_pubkey  # full context — root's overall trust backs delegation
                 )
                 blended = self._compute_delegated_trust(
                     pubkey, delegation, interaction_type
@@ -263,6 +872,13 @@ class TrustEngine:
                     "integrity": 0.0, "diversity": 0.0, "recency": 0.0,
                     "unique_peers": 0, "interactions": 0,
                     "fraud": False, "path_diversity": 0.0,
+                    "avg_quality": 0.0,
+                    "required_deposit_ratio": 1.0,
+                    "sanction_penalty": 0.0, "violation_count": 0,
+                    "requester_trust": None,
+                    "payment_reliability": None,
+                    "rating_fairness": None,
+                    "dispute_rate": None,
                 }
 
         return self._compute_standard_trust_evidence(pubkey, interaction_type)
@@ -294,8 +910,10 @@ class TrustEngine:
         # Compute delegation depth
         depth = len(self._build_delegation_chain(delegation))
 
-        # Compute delegated trust: root_trust * factor / active_count
-        root_trust = self._compute_standard_trust(root_pubkey, interaction_type)
+        # Compute delegated trust: root_trust * factor / active_count.
+        # Root trust uses full context (no filter) — the delegator's overall
+        # credibility backs the delegation, not just one interaction type.
+        root_trust = self._compute_standard_trust(root_pubkey)
         active_count = max(
             self.delegation_store.get_active_delegation_count(root_pubkey), 1
         )

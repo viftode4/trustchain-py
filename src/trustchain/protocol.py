@@ -46,6 +46,10 @@ logger = logging.getLogger("trustchain.protocol")
 # Enforced in the core protocol so it cannot be bypassed regardless of transport.
 MAX_DELEGATION_TTL_MS = 30 * 24 * 3600 * 1000  # 2_592_000_000 ms
 
+# Maximum active delegations per delegator (Sybil identity flood defense).
+# Research: ATTACK-TAXONOMY §1.1, network-ecology-control principle #3.
+MAX_ACTIVE_DELEGATIONS = 10
+
 
 class TrustChainProtocol:
     """Two-phase proposal/agreement protocol engine.
@@ -407,6 +411,21 @@ class TrustChainProtocol:
             )
 
         now = _now_ms()
+
+        # Layer 6.2: Delegation quota — cap active delegations per delegator.
+        if self.delegation_store is not None:
+            active_count = self.delegation_store.get_active_delegation_count(
+                self.pubkey
+            )
+            if active_count >= MAX_ACTIVE_DELEGATIONS:
+                raise DelegationError(
+                    self.pubkey,
+                    detail=(
+                        f"delegation quota exceeded: {active_count} active "
+                        f"delegations (max {MAX_ACTIVE_DELEGATIONS})"
+                    ),
+                )
+
         delegation_id = hashlib.sha256(
             f"{self.pubkey}:{delegate_pubkey}:{now}".encode()
         ).hexdigest()
