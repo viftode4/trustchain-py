@@ -32,6 +32,7 @@ from trustchain.behavioral import (
 from trustchain.collusion import CollusionConfig, detect_collusion
 from trustchain.sealed_rating import extract_sealed_rating
 from trustchain.store import RecordStore
+from trustchain.tiers import compute_tier, max_transaction_value
 
 logger = logging.getLogger("trustchain.trust")
 
@@ -397,6 +398,8 @@ class TrustEngine:
             "payment_reliability": None,
             "rating_fairness": None,
             "dispute_rate": None,
+            "current_tier": "Spot",
+            "max_transaction_value": 10.0,
         }
 
         # Check for fraud by ANY delegate (active OR revoked).
@@ -471,6 +474,8 @@ class TrustEngine:
                     "payment_reliability": None,
                     "rating_fairness": None,
                     "dispute_rate": None,
+                    "current_tier": "Enterprise",
+                    "max_transaction_value": max_transaction_value(),
                 }
 
             path_div = self.netflow.compute_path_diversity(pubkey)
@@ -502,6 +507,8 @@ class TrustEngine:
                     "payment_reliability": None,
                     "rating_fairness": None,
                     "dispute_rate": None,
+                    "current_tier": "Spot",
+                    "max_transaction_value": 10.0,
                 }
 
             connectivity = min(path_div / self.connectivity_threshold, 1.0)
@@ -560,6 +567,8 @@ class TrustEngine:
                 "payment_reliability": None,
                 "rating_fairness": None,
                 "dispute_rate": None,
+                "current_tier": compute_tier(trust_score, interactions).value,
+                "max_transaction_value": max_transaction_value(),
             }
 
         # No seeds configured — no Sybil resistance. Weighted-additive with
@@ -614,6 +623,8 @@ class TrustEngine:
             "payment_reliability": None,
             "rating_fairness": None,
             "dispute_rate": None,
+            "current_tier": compute_tier(_ts_no_seeds, interactions).value,
+            "max_transaction_value": max_transaction_value(),
         }
 
     def _compute_layer5_signals(self, pubkey: str, filtered_chain: list):
@@ -856,6 +867,8 @@ class TrustEngine:
                         "payment_reliability": None,
                         "rating_fairness": None,
                         "dispute_rate": None,
+                        "current_tier": "Spot",
+                        "max_transaction_value": 10.0,
                     }
                 root_pubkey = self._resolve_root(delegation)
                 root_evidence = self._compute_standard_trust_evidence(
@@ -879,6 +892,8 @@ class TrustEngine:
                     "payment_reliability": None,
                     "rating_fairness": None,
                     "dispute_rate": None,
+                    "current_tier": "Spot",
+                    "max_transaction_value": 10.0,
                 }
 
         return self._compute_standard_trust_evidence(pubkey, interaction_type)

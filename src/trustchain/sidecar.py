@@ -547,6 +547,39 @@ class TrustChainSidecar:
             return {"trust_score": float(data)}
         return data
 
+    def tier_requirements(self) -> list[dict[str, Any]]:
+        """GET /tier-requirements — returns the tier qualification table.
+
+        Research: risk-scaled-trust-thresholds §9.2, game-theory/market-mechanisms §4.
+        """
+        data = self._get("/tier-requirements")
+        return data.get("tiers", []) if isinstance(data, dict) else data
+
+    def check_threshold(
+        self,
+        pubkey: str,
+        transaction_value: float,
+        expected_gain: float,
+        *,
+        duration_hours: float = 1.0,
+        recovery_rate: float = 0.0,
+    ) -> dict[str, Any]:
+        """POST /check-threshold — decision-support for transacting.
+
+        Returns trust_score, josang_threshold, risk_threshold, required_deposit,
+        meets_josang, meets_risk, recommendation (proceed/proceed_with_deposit/reject).
+
+        Research: risk-scaled-trust-thresholds §1.3 (Josang), §9.6 (composite),
+        ALGORITHM-CATALOG §39 (Asgaonkar escrow).
+        """
+        return self._post("/check-threshold", {
+            "pubkey": pubkey,
+            "transaction_value": transaction_value,
+            "expected_gain": expected_gain,
+            "duration_hours": duration_hours,
+            "recovery_rate": recovery_rate,
+        })
+
     def discover(
         self,
         capability: str,

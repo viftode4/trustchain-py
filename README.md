@@ -4,9 +4,11 @@
 [![CI](https://github.com/viftode4/trustchain-py/actions/workflows/ci.yml/badge.svg)](https://github.com/viftode4/trustchain-py/actions)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Decentralized trust for AI agents. One decorator, zero config.**
+**Python SDK for TrustChain. One decorator, zero config.**
 
-TrustChain gives every agent-to-agent interaction a cryptographic trust score — without changing your code. Add one decorator, and all HTTP calls are automatically trust-protected via a transparent sidecar proxy. No blockchain, no tokens, no gas fees.
+TrustChain is the interaction-record and coordination layer for autonomous agents and agent networks. The Python SDK gives you portable identity, bilateral signed interaction history, and sidecar-managed HTTP instrumentation without changing your application architecture.
+
+Trust is one application over that history: the same substrate can power discovery, delegation, audit, and routing. Add one decorator, and outbound HTTP calls are automatically recorded and policy-aware through a transparent sidecar proxy. No blockchain, no tokens, no gas fees.
 
 > **[Quickstart guide →](https://github.com/viftode4/trustchain#quick-start)** — install the binary, run as a sidecar, or use the Python decorator.
 
@@ -127,7 +129,7 @@ score = engine.compute_trust(bob.pubkey_hex)
 | `trustchain.integrations` | LangChain, FastAPI/ASGI, MCP, CrewAI adapters |
 | `trustchain.cli` | CLI entry point (`trustchain` command) |
 | `trustchain.protocol` | `TrustChainProtocol` — proposal/agreement state machine |
-| `trustchain.trust` | `TrustEngine` — 4-factor trust (connectivity × integrity × diversity × recency) |
+| `trustchain.trust` | `TrustEngine` — weighted-additive trust: `(0.3 × structural + 0.7 × behavioral) × confidence_scale` |
 | `trustchain.netflow` | NetFlow Sybil resistance (max-flow from seed nodes) |
 | `trustchain.identity` | Ed25519 keypair generation and management |
 | `trustchain.halfblock` | `HalfBlock` data structure, signing, and validation |
@@ -142,7 +144,7 @@ score = engine.compute_trust(bob.pubkey_hex)
 git clone https://github.com/viftode4/trustchain-py.git
 cd trustchain-py
 pip install -e ".[dev]"
-python -m pytest tests/ -v   # 311 tests
+python -m pytest tests/ -v   # 475 tests
 ```
 
 ## Public Seed Node
@@ -160,6 +162,7 @@ Implements [draft-pouwelse-trustchain-01](https://datatracker.ietf.org/doc/draft
 - [trustchain](https://github.com/viftode4/trustchain) — Rust core: sidecar binary, QUIC P2P, MCP server, dashboard
 - [trustchain-js](https://github.com/viftode4/trustchain-js) — TypeScript SDK: `npm install @trustchain/sdk`
 - [trustchain-agent-os](https://github.com/viftode4/trustchain-agent-os) — Agent framework adapters (12 frameworks)
+- [trustchain-economy](https://github.com/viftode4/trustchain-economy) — mechanism-design and adversarial evaluation engine for agent networks
 
 ## License
 

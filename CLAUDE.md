@@ -7,7 +7,7 @@ Implements IETF draft-pouwelse-trustchain-01 with NetFlow Sybil resistance.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests/ -x -q   # 311 tests; 1 pre-existing gRPC port-bind failure is expected
+python -m pytest tests/ -x -q   # 475 tests; 1 pre-existing gRPC port-bind failure is expected
 ```
 
 CI runs on ubuntu/windows/macos x Python 3.11/3.12/3.13. Integration job builds Rust binary and
