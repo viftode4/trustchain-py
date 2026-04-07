@@ -1103,7 +1103,7 @@ def compute_trust(pubkey: str, store: RecordStore) -> float:
         + weights["age"] * age_score
         + weights["entropy"] * normalized_entropy
     )
-    return round(min(max(trust, 0.0), 1.0), 3)
+    return min(max(trust, 0.0), 1.0)
 
 
 def is_sybil_cluster(pubkeys: Set[str], store: RecordStore) -> bool:
@@ -1150,7 +1150,7 @@ def compute_transitive_trust(pubkey: str, store: RecordStore, alpha: float = 0.8
     max_pr = max(pr.values())
     if max_pr == 0:
         return 0.0
-    return round(pr.get(pubkey, 0.0) / max_pr, 3)
+    return pr.get(pubkey, 0.0) / max_pr
 
 
 def compute_chain_trust(
@@ -1176,7 +1176,7 @@ def compute_chain_trust(
         penalized = base_trust * penalty
         if integrity == 0.0:
             penalized = min(penalized, 0.1)
-        return round(min(max(penalized, 0.0), 1.0), 3)
+        return min(max(penalized, 0.0), 1.0)
 
     return base_trust
 
@@ -1249,4 +1249,4 @@ def compute_trust_with_decay(
         + weights["age"] * age_score
         + weights["entropy"] * normalized_entropy
     )
-    return round(min(max(trust, 0.0), 1.0), 3)
+    return min(max(trust, 0.0), 1.0)
