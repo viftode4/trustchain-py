@@ -711,11 +711,11 @@ class TrustChainSidecar:
 
     def receive_proposal(self, block: dict[str, Any]) -> dict[str, Any]:
         """POST /receive_proposal — receive a proposal block from a peer."""
-        return self._post("/receive_proposal", block)
+        return self._post("/receive_proposal", {"proposal": block})
 
     def receive_agreement(self, block: dict[str, Any]) -> dict[str, Any]:
         """POST /receive_agreement — receive an agreement block from a peer."""
-        return self._post("/receive_agreement", block)
+        return self._post("/receive_agreement", {"agreement": block})
 
     def accept_delegation(self, proposal_block: dict[str, Any]) -> dict[str, Any]:
         """POST /accept_delegation — accept a delegation proposal."""
